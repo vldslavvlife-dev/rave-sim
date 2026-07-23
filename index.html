@@ -446,6 +446,7 @@ const S = {
   shiftBlind:0, // до какой игровой минуты патруль слеп (пересменка)
   romance:0,    // прогресс линии Пси-феи (0..3)
   headliner:false, headlinerFired:false, // хедлайнер-час (02:00)
+  quest:{courier:'none', mascotFavors:0}, // квестовые цепочки
   slot:0, gameMin:0, // минут с 23:00
   heat:0, hotbar:[...HOTBAR_DEFAULT], // «палево» и настраиваемый хотбар
   contacts:['🐱 Мяу-дилер (главный танцпол)'],
@@ -1386,6 +1387,7 @@ function markerFor(def){
   if (def.guard)  return '🕶';
   if (def.troll)  return '☠️';
   if (def.junkie) return '🧟';
+  if (def.lost)   return '❗';
   if (def.stuck)  return '❗';
   if (def.raver)  return '💬';
   return null;
@@ -1545,6 +1547,8 @@ function updateNPCs(dt){
       }
       continue;
     }
+    // пропавший курьер лежит в отключке на месте, пока его не подняли
+    if (n.raver && n.lost){ m.rotation.z = .5; m.position.y = 0; continue; }
     // ── Задача от социального движка важнее обычного цикла ──
     if (n.raver && n.task){
       const T = n.task;
@@ -1607,7 +1611,7 @@ let socialT = 6;
 function updateSocial(dt){
   socialT -= dt; if (socialT>0) return;
   socialT = 4 + Math.random()*5;
-  const ravers = npcs.filter(n=>n.raver && !n.task);
+  const ravers = npcs.filter(n=>n.raver && !n.task && !n.lost && !n.friend);
   if (ravers.length<2) return;
   const pick = arr => arr[Math.floor(Math.random()*arr.length)];
   const roll = Math.random();
@@ -2085,6 +2089,7 @@ function interact(){
   else if (n.junkie) openJunkie(n);
   else if (n.troll) openTroll(n);
   else if (n.raver){
+    if (n.lost){ openLostCourier(n); return; }             // квест: пропавший курьер
     if (n.name==='Пси-фея'){ openPsyFairy(n); return; } // романтическая линия
     if (n.stuck && !n.helped){
       n.helped = true; S.rep += 5; statMoney(200);
@@ -2211,24 +2216,92 @@ function openShop(n){
     b.onclick = ()=>{ closeDialog(); startCourier(n); };
     opts.appendChild(b);
   }
+  // КВЕСТ: Технарь ищет пропавшего курьера
+  if (n.name==='Технарь'){
+    if (S.quest.courier==='none'){
+      const q = document.createElement('button'); q.className='opt';
+      q.innerHTML = '🔍 «Найди моего курьера» <small style="color:#9ad">— пропал с товаром, был в туалетах</small>';
+      q.onclick = ()=>{ closeDialog(); startCourierQuest(); };
+      opts.appendChild(q);
+    } else if (S.quest.courier==='helped'){
+      const q = document.createElement('button'); q.className='opt';
+      q.innerHTML = '✅ «Твой курьер жив, я его вытащил» <span class="price">награда</span>';
+      q.onclick = ()=>{ closeDialog(); statMoney(600); S.rep+=12; S.quest.courier='rewarded';
+        n.priceMul = (n.priceMul||1)*.85; toast('🤝 Технарь: «Ты человек. Теперь тебе тут всегда скидка.» +₽600, +12 REP'); };
+      opts.appendChild(q);
+    } else if (S.quest.courier==='robbed'){
+      const q = document.createElement('button'); q.className='opt danger';
+      q.textContent = '😠 Технарь смотрит зло...';
+      q.onclick = ()=>{ closeDialog(); toast('Технарь: «Я знаю, что ты сделал с пацаном. Цены для тебя — двойные.»'); };
+      opts.appendChild(q);
+    }
+  }
+  // ЦЕПОЧКА КОТА: услуги маскота → легендарная награда
+  if (n.mascot && S.tutorial>=1){
+    if (S.quest.mascotFavors < 5){
+      const q = document.createElement('button'); q.className='opt';
+      q.innerHTML = `🐾 Услуга коту (${S.quest.mascotFavors}/5) <small style="color:#9ad">— доставь пакетик, +150₽</small>`;
+      q.onclick = ()=>{ closeDialog(); startCourier(n, true); };
+      opts.appendChild(q);
+    } else if (!S.quest.mascotReward){
+      const q = document.createElement('button'); q.className='opt';
+      q.innerHTML = '🌸 «Ты сделал всё, о чём я мурчал» <span class="price">🌸 награда</span>';
+      q.onclick = ()=>{ closeDialog(); S.quest.mascotReward=true; S.inv.pinkline=(S.inv.pinkline||0)+1;
+        S.rep+=15; toast('🐱🌸 Кот дарит тебе ЛЕГЕНДАРНУЮ РОЗОВУЮ ДОРОЖКУ и +15 REP. «Мурр. Ты семья.»');
+        S.tripReports.push('Заслужил дар кота-маскота'); };
+      opts.appendChild(q);
+    }
+  }
   const x = document.createElement('button'); x.className='opt'; x.textContent='Уйти';
   x.onclick = closeDialog; opts.appendChild(x);
 }
 let courier = null;
-function startCourier(from){
-  const targets = npcs.filter(n=>n.raver);
-  courier = {target: targets[Math.floor(Math.random()*targets.length)]};
+function startCourierQuest(){
+  // спавним пропавшего курьера в туалетах, в отходняке
+  const wc = ZONES.find(z=>z.name==='ТУАЛЕТЫ');
+  lostCourier = addNPC({x:wc.x+rnd(-4,4), z:wc.z+rnd(-4,4), name:'Пропавший курьер',
+    raver:true, lost:true, color:0x557799, hair:0x223344});
+  lostCourier.mesh.rotation.z = .5; // лежит в отходняке
+  S.quest.courier = 'find';
+  toast('🔍 Квест: курьер Технаря в отключке где-то в ТУАЛЕТАХ. Найди его (маркер ❗).');
+}
+let lostCourier = null;
+function openLostCourier(n){
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = '😵 Пропавший курьер';
+  dlg.querySelector('.txt').textContent = '«...где я... голова... у меня был пакет для Технаря... ой, всё плывёт...» Парень еле дышит, но живой.';
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  const h = document.createElement('button'); h.className='opt';
+  h.textContent = '🤝 Поднять и довести до медпункта (правильно)';
+  h.onclick = ()=>{ closeDialog(); S.quest.courier='helped'; S.rep+=6;
+    n.lost=false; n.helped=true; n.mesh.rotation.z=0;
+    n.task={type:'goto', x:ZONES.find(z=>z.name==='МЕДПУНКТ').x, z:ZONES.find(z=>z.name==='МЕДПУНКТ').z, sp:2.5};
+    toast('🤝 Ты поднял курьера и повёл к медикам. Вернись к Технарю за наградой. +6 REP'); };
+  opts.appendChild(h);
+  const r = document.createElement('button'); r.className='opt danger';
+  r.textContent = '🥷 Обобрать его (забрать пакет)';
+  r.onclick = ()=>{ closeDialog(); S.quest.courier='robbed'; S.inv.meph=(S.inv.meph||0)+2; S.inv.coke=(S.inv.coke||0)+1;
+    S.rep=Math.max(0,S.rep-4); n.lost=false; if(n.marker)n.marker.visible=false;
+    toast('🥷 Ты обчистил отключенного курьера: +2 меф, +1 кокс. На душе паршиво (-4 REP).'); };
+  opts.appendChild(r);
+  const x = document.createElement('button'); x.className='opt'; x.textContent='Оставить как есть';
+  x.onclick = closeDialog; opts.appendChild(x);
+}
+function startCourier(from, mascot){
+  const targets = npcs.filter(n=>n.raver && !n.lost);
+  courier = {target: targets[Math.floor(Math.random()*targets.length)], mascot};
   toast(`📦 Найди «${courier.target.name}» и передай пакет (E рядом)`);
 }
 function checkCourier(){
   if (!courier) return;
   const t = courier.target;
   if (Math.hypot(t.mesh.position.x-player.pos.x, t.mesh.position.z-player.pos.z) < 4){
-    statMoney(300); S.rep += 8; courier = null;
-    toast('📦 Доставлено: +300₽, +8 REP');
+    if (courier.mascot){ statMoney(150); S.quest.mascotFavors++;
+      toast(`🐾 Услуга выполнена (${S.quest.mascotFavors}/5): +150₽. Возвращайся к коту.`); }
+    else { statMoney(300); S.rep += 8; toast('📦 Доставлено: +300₽, +8 REP'); }
+    courier = null;
   }
 }
-// Диалог с диким торчком: поделиться, откупиться, оттолкнуть
 // Романтическая линия Пси-феи: растёт по разговорам под кайфом → своя концовка
 function openPsyFairy(n){
   const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
@@ -2408,7 +2481,7 @@ function saveGame(){
       mephTol:S.mephTol, crave:S.crave, log:S.log, contacts:S.contacts,
       heat:S.heat, hotbar:S.hotbar, night:S.night, stats:S.stats, challenges:S.challenges,
       badtrip:S.badtrip, dirtyBatch:S.dirtyBatch, dirtyBatchT:S.dirtyBatchT,
-      romance:S.romance, romanceSealed:S.romanceSealed,
+      romance:S.romance, romanceSealed:S.romanceSealed, quest:S.quest,
       tripReports:S.tripReports, tutorial:S.tutorial, settings:S.settings,
       pos:[player.pos.x,player.pos.y,player.pos.z],
     }));
@@ -2439,6 +2512,7 @@ function loadGame(){
     if (typeof d.dirtyBatchT === 'number') S.dirtyBatchT = d.dirtyBatchT;
     if (typeof d.romance === 'number') S.romance = d.romance;
     if (d.romanceSealed) S.romanceSealed = d.romanceSealed;
+    if (d.quest) Object.assign(S.quest, d.quest);
     if (d.stats) Object.assign(S.stats, d.stats);
     if (d.challenges) S.challenges = d.challenges;
     if (Array.isArray(d.hotbar) && d.hotbar.every(id=>SUB[id])) S.hotbar = d.hotbar;
@@ -2514,7 +2588,17 @@ function updateHUD(){
 }
 function updatePhone(){
   const cv = el('phChal');
-  cv.innerHTML = CHALLENGES.map(c=>{
+  // активные квесты сверху
+  let quests = '';
+  const cq = {none:'', find:'🔍 Найти курьера Технаря (туалеты, ❗)',
+    helped:'✅ Вернуться к Технарю за наградой', robbed:'😠 Ты обобрал курьера Технаря',
+    rewarded:'✔ Курьер спасён'}[S.quest.courier];
+  if (cq) quests += `<div class="dose-row"><span>${cq}</span></div>`;
+  if (courier) quests += `<div class="dose-row"><span>📦 Доставить пакет: «${courier.target.name}»</span></div>`;
+  if (S.quest.mascotFavors>0 && !S.quest.mascotReward)
+    quests += `<div class="dose-row"><span>🐾 Услуги коту: ${S.quest.mascotFavors}/5</span></div>`;
+  if (quests) quests = `<div style="border-bottom:1px solid #223;margin-bottom:6px;padding-bottom:4px">${quests}</div>`;
+  cv.innerHTML = quests + CHALLENGES.map(c=>{
     const done = S.challenges[c.id];
     return `<div class="dose-row" style="opacity:${done?1:.7}">
       <span>${done?'✅':'⬜'} ${c.name} <small style="color:#89a">— ${c.desc}</small></span>
@@ -2863,6 +2947,9 @@ window.__headliner = ()=>{ S.gameMin = 180; updateTimedEvents(); return S.headli
 window.__blackout = ()=>startBlackout();
 window.__pool = ()=>{ const v=ZONES.find(z=>z.name==='VIP-ЗОНА'); player.pos.set(v.x+6,0,v.z-5); return tryPoolJump(); };
 window.__deal = ()=>{ const r=npcs.find(n=>n.raver&&!n.friend); const sell=Object.keys(S.inv).filter(id=>isIllegal(id)&&S.inv[id]>0); openRaverDeal(r, sell); return [...document.querySelectorAll('#dialog .opt')].map(b=>b.textContent); };
+window.__questCourier = ()=>{ startCourierQuest(); return {courier:S.quest.courier, lostAt:lostCourier&&[lostCourier.mesh.position.x|0, lostCourier.mesh.position.z|0]}; };
+window.__openLost = ()=>{ openLostCourier(lostCourier); return [...document.querySelectorAll('#dialog .opt')].map(b=>b.textContent); };
+window.__mascot = ()=>{ const m=npcs.find(n=>n.mascot); m.mesh.position.set(player.pos.x+2,0,player.pos.z); S.tutorial=Math.max(1,S.tutorial); openShop(m); return [...document.querySelectorAll('#dialog .opt')].map(b=>b.textContent); };
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
