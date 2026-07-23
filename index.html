@@ -320,6 +320,7 @@ body.touch #crosshair{display:none}
 <!-- Телефон -->
 <div id="phone" class="panel"><div class="body">
   <h3>📱 23:00 · NEON TRIP</h3>
+  <div class="ph-sec"><h4>Челленджи ночи</h4><div id="phChal"></div></div>
   <div class="ph-sec"><h4>Активные приходы</h4><div id="phDoses"></div></div>
   <div class="ph-sec"><h4>Журнал доз</h4><div id="phLog" style="font-size:11px;color:#89a"></div></div>
   <div class="ph-sec"><h4>Контакты</h4><div id="phContacts"></div></div>
@@ -439,7 +440,42 @@ const S = {
   tripReports:[], serotoninStorm:false, combo:0,
   settings:{strobe:true, trip:1, alcoOnly:false, harm:true, vol:.7},
   tutorial:0,
+  night:1,           // номер ночи (NG+)
+  // статистика ночи для челленджей и экрана рассвета
+  stats:{doses:0, uniq:{}, spent:0, earned:0, robbed:0, chases:0, busts:0,
+         maxCombo:0, odSurvived:0, hugs:0, cleanNight:true},
+  challenges:{},     // id → true (выполнено)
 };
+
+// Челленджи ночи: цель, проверка. Выполнение даёт REP и запись.
+const CHALLENGES = [
+  {id:'sampler', name:'Дегустатор', desc:'Попробуй 5 разных веществ', rep:10,
+   test:s=>Object.keys(s.uniq).length>=5},
+  {id:'combo30', name:'Машина танца', desc:'Собери комбо x30 на ритме', rep:12,
+   test:s=>s.maxCombo>=30},
+  {id:'survivor', name:'На ногах', desc:'Переживи передоз, не вызывая медика', rep:15,
+   test:s=>s.odSurvived>=1},
+  {id:'social', name:'Душа тусовки', desc:'Обнимись под мефом 5 раз', rep:10,
+   test:s=>s.hugs>=5},
+  {id:'rich', name:'Ночной бизнес', desc:'Заработай 2000₽ за ночь', rep:12,
+   test:s=>s.earned>=2000},
+  {id:'storm', name:'Серотониновый шторм', desc:'Собери секретный микс меф+MDMA', rep:20,
+   test:(s,S)=>S.serotoninStorm},
+  {id:'dawn_clean', name:'Чистая ночь', desc:'Доживи до рассвета ни разу не спалившись', rep:25,
+   test:(s)=>false}, // проверяется только на рассвете
+];
+function checkChallenges(){
+  for (const c of CHALLENGES){
+    if (!S.challenges[c.id] && c.id!=='dawn_clean' && c.test(S.stats, S)){
+      S.challenges[c.id] = true; S.rep += c.rep;
+      toast(`🏆 Челлендж «${c.name}»: +${c.rep} REP`);
+    }
+  }
+}
+function statMoney(delta){ // учёт заработка/трат отдельно
+  if (delta>0) S.stats.earned += delta; else S.stats.spent += -delta;
+  S.money += delta;
+}
 
 // Кривая эффекта дозы: 0→1 к пику, плато, экспоненциальный спад.
 // Возвращает [уровень, фаза] где фаза: 'up' | 'peak' | 'down' | 'done'
@@ -463,6 +499,7 @@ function takeDose(id, opts={}){
       toast('⚠ HR: слишком рано догоняться — пик ещё не прошёл'); }
   }
   S.inv[id]--;
+  S.stats.doses++; S.stats.uniq[id] = true; // статистика для челленджей
   saveGame(); // автосейв перед каждым приёмом мефа и вообще любой дозы
   const quality = opts.quality ?? (0.7 + Math.random()*0.3); // примеси
   const tolMul = s.crave ? Math.max(.4, 1 - S.mephTol*.5) : 1;
@@ -491,6 +528,7 @@ function takeDose(id, opts={}){
   }
   audio.punch();
   if (s.method==='snort') fxPowderPuff();
+  checkChallenges();
   return true;
 }
 
@@ -527,6 +565,7 @@ function busted(){
   player.pos.set(0,0,92); // выкинули к воротам
   toast(`👮 Приняли. Штраф ₽${fine}, изъято ${seized} шт, потерян почти час. Скажи спасибо, что не увезли.`);
   S.tripReports.push('Задержание патрулём');
+  S.stats.busts++; S.stats.cleanNight = false;
   S.vibe = Math.max(0, S.vibe - 25);
   saveGame();
 }
@@ -537,6 +576,7 @@ function serotoninStorm(){
   toast('🌸💊 СЕРОТОНИНОВЫЙ ШТОРМ — музыка стала тактильной');
   S.tripReports.push('Серотониновый шторм (меф+MDMA)');
   S.vibe = Math.min(100, S.vibe + 40);
+  checkChallenges();
   el('fx-mandala').style.opacity = .9;
   setTimeout(()=>{ el('fx-mandala').style.opacity = 0; }, 45000);
 }
@@ -1237,7 +1277,7 @@ function updateNPCs(dt){
       if (n.marker) n.marker.visible = !chasing;
       if (n.alert)  n.alert.visible  = chasing;
       if (chasing){
-        if (!n.wasChasing){ n.wasChasing=true; toast('👮 ЗА ТОБОЙ ИДУТ! Отрывайся или ныряй в safe-зону'); }
+        if (!n.wasChasing){ n.wasChasing=true; S.stats.chases++; S.stats.cleanNight=false; toast('👮 ЗА ТОБОЙ ИДУТ! Отрывайся или ныряй в safe-зону'); }
         const sp = 7.5; // быстрее шага, медленнее бега — шанс уйти есть
         m.position.x += dx/d*sp*dt; m.position.z += dz/d*sp*dt;
         m.rotation.y = Math.atan2(dx,dz);
@@ -1376,9 +1416,9 @@ function junkieRob(n){
   const stash = Object.keys(S.inv).filter(id=>S.inv[id]>0 && isIllegal(id));
   if (stash.length && Math.random()<.6){
     const id = stash[Math.floor(Math.random()*stash.length)];
-    S.inv[id]--; toast(`🧟 Торчок ВЫРВАЛ у тебя ${SUB[id].icon} ${SUB[id].name} и дал дёру!`);
+    S.inv[id]--; S.stats.robbed++; toast(`🧟 Торчок ВЫРВАЛ у тебя ${SUB[id].icon} ${SUB[id].name} и дал дёру!`);
   } else if (S.money>0){
-    const amt = Math.min(S.money, 150); S.money -= amt;
+    const amt = Math.min(S.money, 150); S.money -= amt; S.stats.robbed++;
     toast(`🧟 Торчок выхватил ₽${amt} и растворился в темноте`);
   } else toast('🧟 Торчок обшарил тебя — пусто. Плюнул и ушёл.');
   n.task = {type:'flee', t:4};
@@ -1648,10 +1688,14 @@ function tryRhythmHit(){
   const off = Math.min(sinceBeat % (beatLen), beatLen - sinceBeat % beatLen);
   if (off < window_){
     S.combo++;
+    if (S.combo>S.stats.maxCombo){ S.stats.maxCombo = S.combo; checkChallenges(); }
     const gain = (1 + S.combo*.15) * (1 + S.empathy*.8);
     S.vibe = Math.min(100, S.vibe + gain);
     if (S.combo%8===0) toast(`🔥 Комбо x${S.combo}! Толпа с тобой`);
-    if (S.empathy>.5 && S.combo%5===0){ S.money += 50; toast('💗 Обнимашки → кто-то сунул полтос «на воду»'); }
+    if (S.empathy>.5 && S.combo%5===0){
+      statMoney(50); S.stats.hugs++; checkChallenges();
+      toast('💗 Обнимашки → кто-то сунул полтос «на воду»');
+    }
   } else { S.combo = 0; }
   el('comboN').textContent = S.combo;
   const p = el('rhythm').querySelector('.pulse');
@@ -1676,6 +1720,7 @@ function updateOverdose(dt){
     S.tox = .6; S.vibe = Math.max(5, S.vibe-30);
     toast('😮‍💨 Отпустило. Больше не мешай столько.');
     S.tripReports.push('Пережил передоз на ногах');
+    S.stats.odSurvived++; checkChallenges();
   }
   if (od.mash < -40){ // не справился → медпункт, потеря прогресса части ночи
     od.active = false; el('odPanel').classList.remove('on');
@@ -1719,7 +1764,7 @@ function interact(){
   else if (n.troll) openTroll(n);
   else if (n.raver){
     if (n.stuck && !n.helped){
-      n.helped = true; S.rep += 5; S.money += 200;
+      n.helped = true; S.rep += 5; statMoney(200);
       toast(`🤝 Помог зависшему (${n.name}): +5 REP, +200₽`);
     } else if (S.empathy>.4){
       S.rep += 2; S.vibe = Math.min(100,S.vibe+6);
@@ -1756,7 +1801,7 @@ function openShop(n){
     b.onclick = ()=>{
       const cost = (n.freebie && id==='meph') ? 0 : price;
       if (S.money < cost){ toast('Не хватает денег'); return; }
-      S.money -= cost; S.inv[id]++;
+      statMoney(-cost); S.inv[id]++;
       if (n.freebie) n.freebie = false;
       if (!S.contacts.includes(n.name)) S.contacts.push(n.name);
       toast(`Купил: ${s.name}`);
@@ -1788,7 +1833,7 @@ function checkCourier(){
   if (!courier) return;
   const t = courier.target;
   if (Math.hypot(t.mesh.position.x-player.pos.x, t.mesh.position.z-player.pos.z) < 4){
-    S.money += 300; S.rep += 8; courier = null;
+    statMoney(300); S.rep += 8; courier = null;
     toast('📦 Доставлено: +300₽, +8 REP');
   }
 }
@@ -1873,21 +1918,44 @@ function tutorialSay(){
   else if (S.tutorial===3){ toast(lines[3]); S.tutorial=4; }
 }
 
-// Финал ночи: рассвет в 06:00
+// Финал ночи: рассвет в 06:00 — экран статистики + запуск NG+
 let ended = false;
 function checkDawn(){
   if (ended || S.gameMin < 420) return; // 7 часов * 60
   ended = true;
+  // финальный челлендж «чистая ночь»
+  if (S.stats.cleanNight && !S.challenges.dawn_clean){
+    S.challenges.dawn_clean = true; S.rep += 25;
+  }
   const enlightened = S.vibe > 65 && S.tox < .5;
+  const st = S.stats, done = Object.keys(S.challenges).length;
   const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
-  dlg.querySelector('.who').textContent = '🌅 06:00 — РАССВЕТ';
-  dlg.querySelector('.txt').textContent = enlightened
-    ? `Небо порозовело. Ты стоишь посреди редеющей толпы — уставший, живой, просветлённый. Вайб: ${S.vibe|0}. Трип-репортов собрано: ${S.tripReports.length}. Ночь прожита до дна.`
-    : `Ты встречаешь рассвет в полуотключке на пуфе в чилл-зоне. Голова гудит, тяга скребёт. Вайб: ${S.vibe|0}. Может, в следующий раз — аккуратнее.`;
+  dlg.querySelector('.who').textContent = `🌅 06:00 — РАССВЕТ · Ночь ${S.night}`;
+  dlg.querySelector('.txt').innerHTML =
+    (enlightened
+      ? `Небо порозовело. Ты стоишь посреди редеющей толпы — уставший, живой, <b style="color:#ffb01e">просветлённый</b>. Ночь прожита до дна.`
+      : `Ты встречаешь рассвет в полуотключке на пуфе. Голова гудит, тяга скребёт. Может, в следующий раз — аккуратнее.`)
+    + `<div style="margin-top:12px;font-size:12px;line-height:1.9;color:#bcd;text-align:left">`
+    + `Вайб: <b>${S.vibe|0}</b> · Токсичность: <b>${(S.tox*100)|0}%</b> · REP: <b>${S.rep}</b><br>`
+    + `Доз принято: <b>${st.doses}</b> (${Object.keys(st.uniq).length} разных)<br>`
+    + `Заработано: <b>₽${st.earned}</b> · Потрачено: <b>₽${st.spent}</b><br>`
+    + `Погонь: <b>${st.chases}</b> · Задержаний: <b>${st.busts}</b> · Ограблений: <b>${st.robbed}</b><br>`
+    + `Макс. комбо: <b>x${st.maxCombo}</b> · Челленджей: <b>${done}/${CHALLENGES.length}</b> · Трип-репортов: <b>${S.tripReports.length}</b>`
+    + `</div>`;
   const opts = dlg.querySelector('.opts'); opts.innerHTML='';
-  const b = document.createElement('button'); b.className='opt'; b.textContent='Начать новую ночь';
-  b.onclick = ()=>{ store.del(); location.reload(); };
-  opts.appendChild(b);
+  // NG+: сохраняем толерантность, репутацию и прогресс челленджей
+  const ngplus = document.createElement('button'); ngplus.className='opt';
+  ngplus.innerHTML = `🌗 Новая ночь (NG+) <small style="color:#9ad">— толерантность к мефу ${(S.mephTol*100)|0}%, REP и челленджи переносятся</small>`;
+  ngplus.onclick = ()=>{
+    store.set(JSON.stringify({ngplus:true, night:S.night+1, rep:S.rep,
+      mephTol:S.mephTol, challenges:S.challenges, settings:S.settings,
+      contacts:S.contacts, tripReports:S.tripReports}));
+    location.reload();
+  };
+  opts.appendChild(ngplus);
+  const fresh = document.createElement('button'); fresh.className='opt'; fresh.textContent='🌑 Начать с чистого листа';
+  fresh.onclick = ()=>{ store.del(); location.reload(); };
+  opts.appendChild(fresh);
 }
 
 // Сохранение. localStorage может быть недоступен (песочница iframe) —
@@ -1903,7 +1971,7 @@ function saveGame(){
     store.set(JSON.stringify({
       money:S.money, rep:S.rep, vibe:S.vibe, tox:S.tox, inv:S.inv, gameMin:S.gameMin,
       mephTol:S.mephTol, crave:S.crave, log:S.log, contacts:S.contacts,
-      heat:S.heat, hotbar:S.hotbar,
+      heat:S.heat, hotbar:S.hotbar, night:S.night, stats:S.stats, challenges:S.challenges,
       tripReports:S.tripReports, tutorial:S.tutorial, settings:S.settings,
       pos:[player.pos.x,player.pos.y,player.pos.z],
     }));
@@ -1913,10 +1981,24 @@ function loadGame(){
   try{
     const d = JSON.parse(store.get());
     if (!d) return false;
+    if (d.ngplus){ // старт NG+: переносим прогресс, но ночь свежая
+      S.night = d.night || 2; S.rep = d.rep||0; S.mephTol = d.mephTol||0;
+      if (d.challenges) S.challenges = d.challenges;
+      if (d.contacts) S.contacts = d.contacts;
+      if (d.tripReports) S.tripReports = d.tripReports;
+      if (d.settings) Object.assign(S.settings, d.settings);
+      S.rep += 10; // бонус за пройденную ночь: доступ к VIP с ходу
+      S.money = 1800; S.vibe = 30;
+      toast(`🌗 Ночь ${S.night}. Меф уже «не тот» (толерантность ${(S.mephTol*100)|0}%) — придётся миксовать.`);
+      return true;
+    }
     Object.assign(S, {money:d.money, rep:d.rep, vibe:d.vibe, tox:d.tox, inv:d.inv,
       gameMin:d.gameMin, mephTol:d.mephTol, crave:d.crave, log:d.log,
       contacts:d.contacts, tripReports:d.tripReports, tutorial:d.tutorial});
     if (typeof d.heat === 'number') S.heat = d.heat;
+    if (typeof d.night === 'number') S.night = d.night;
+    if (d.stats) Object.assign(S.stats, d.stats);
+    if (d.challenges) S.challenges = d.challenges;
     if (Array.isArray(d.hotbar) && d.hotbar.every(id=>SUB[id])) S.hotbar = d.hotbar;
     if (d.settings) Object.assign(S.settings, d.settings);
     if (d.pos) player.pos.set(...d.pos);
@@ -1982,6 +2064,13 @@ function updateHUD(){
   } else hint.style.display='none';
 }
 function updatePhone(){
+  const cv = el('phChal');
+  cv.innerHTML = CHALLENGES.map(c=>{
+    const done = S.challenges[c.id];
+    return `<div class="dose-row" style="opacity:${done?1:.7}">
+      <span>${done?'✅':'⬜'} ${c.name} <small style="color:#89a">— ${c.desc}</small></span>
+      <span class="t">+${c.rep}</span></div>`;
+  }).join('');
   const dv = el('phDoses'); dv.innerHTML='';
   for (const d of S.doses){
     const s = SUB[d.id], [lv,ph] = doseCurve(d, S.gameMin);
@@ -2288,7 +2377,13 @@ async function boot(fromSave){
 }
 el('btnStart').onclick = ()=>boot(false);
 el('btnContinue').onclick = ()=>boot(true);
-if (store.get()) el('btnContinue').style.display='inline-block';
+try{
+  const sv = JSON.parse(store.get());
+  if (sv){
+    el('btnContinue').style.display='inline-block';
+    if (sv.ngplus) el('btnContinue').textContent = `🌗 Начать Ночь ${sv.night} (NG+)`;
+  }
+}catch(e){}
 // отладочные хуки (безопасны в проде)
 window.__dbg = ()=>({inv:S.inv, lvl:S.lvl, doses:S.doses.length, tox:S.tox, heat:S.heat|0,
   guards:npcs.filter(n=>n.guard).length, guardDist:nearestGuardDist()|0,
@@ -2298,6 +2393,8 @@ window.__tp = (x,z)=>player.pos.set(x,0,z);
 window.__heat = v=>addHeat(v);
 window.__give = (id,n=1)=>{ S.inv[id]=(S.inv[id]||0)+n; };
 window.__social = ()=>npcs.filter(n=>n.task).map(n=>`${n.name}:${n.task.type}`);
+window.__S = S;
+window.__jumpDawn = ()=>{ S.gameMin = 420; checkDawn(); };
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
