@@ -1157,15 +1157,21 @@ function checkDawn(){
     : `Ты встречаешь рассвет в полуотключке на пуфе в чилл-зоне. Голова гудит, тяга скребёт. Вайб: ${S.vibe|0}. Может, в следующий раз — аккуратнее.`;
   const opts = dlg.querySelector('.opts'); opts.innerHTML='';
   const b = document.createElement('button'); b.className='opt'; b.textContent='Начать новую ночь';
-  b.onclick = ()=>{ localStorage.removeItem('neontrip'); location.reload(); };
+  b.onclick = ()=>{ store.del(); location.reload(); };
   opts.appendChild(b);
 }
 
-// Сохранение
+// Сохранение. localStorage может быть недоступен (песочница iframe) —
+// все обращения через safe-обёртку, игра тогда просто живёт без сейвов.
+const store = {
+  get(){ try{ return localStorage.getItem('neontrip'); }catch(e){ return null; } },
+  set(v){ try{ localStorage.setItem('neontrip', v); }catch(e){} },
+  del(){ try{ localStorage.removeItem('neontrip'); }catch(e){} },
+};
 function saveGame(){
   try{
     const {started,paused,...rest} = S;
-    localStorage.setItem('neontrip', JSON.stringify({
+    store.set(JSON.stringify({
       money:S.money, rep:S.rep, vibe:S.vibe, tox:S.tox, inv:S.inv, gameMin:S.gameMin,
       mephTol:S.mephTol, crave:S.crave, log:S.log, contacts:S.contacts,
       tripReports:S.tripReports, tutorial:S.tutorial, settings:S.settings,
@@ -1175,7 +1181,7 @@ function saveGame(){
 }
 function loadGame(){
   try{
-    const d = JSON.parse(localStorage.getItem('neontrip'));
+    const d = JSON.parse(store.get());
     if (!d) return false;
     Object.assign(S, {money:d.money, rep:d.rep, vibe:d.vibe, tox:d.tox, inv:d.inv,
       gameMin:d.gameMin, mephTol:d.mephTol, crave:d.crave, log:d.log,
@@ -1341,7 +1347,7 @@ el('setAlcoOnly').onchange = e=>{ S.settings.alcoOnly = e.target.checked; saveGa
 el('setHarm').onchange = e=>{ S.settings.harm = e.target.checked; saveGame(); };
 el('setVol').oninput = e=>{ S.settings.vol = e.target.value/100; audio.setVol(S.settings.vol); saveGame(); };
 el('btnResume').onclick = togglePause;
-el('btnReset').onclick = ()=>{ localStorage.removeItem('neontrip'); location.reload(); };
+el('btnReset').onclick = ()=>{ store.del(); location.reload(); };
 
 // ── Старт ──
 async function boot(fromSave){
@@ -1374,7 +1380,7 @@ async function boot(fromSave){
 }
 el('btnStart').onclick = ()=>boot(false);
 el('btnContinue').onclick = ()=>boot(true);
-if (localStorage.getItem('neontrip')) el('btnContinue').style.display='inline-block';
+if (store.get()) el('btnContinue').style.display='inline-block';
 // отладочные хуки (безопасны в проде)
 window.__dbg = ()=>({inv:S.inv, lvl:S.lvl, doses:S.doses.length, tox:S.tox,
   pos:[player.pos.x|0, player.pos.z|0], zone:currentZone()?.name});
