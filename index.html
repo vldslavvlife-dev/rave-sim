@@ -77,6 +77,9 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;
 #b-crave{border-color:#ff2e88}
 #b-crave>i{background:repeating-linear-gradient(45deg,#ff2e88 0 6px,#7a0038 6px 12px)}
 #b-crave.blink{animation:barBlink .6s steps(2) infinite}
+#b-heat{border-color:#4aa3ff}
+#b-heat>i{background:linear-gradient(90deg,#4aa3ff,#ff2222)}
+#b-heat.blink{animation:barBlink .5s steps(2) infinite;border-color:#ff2222}
 @keyframes barBlink{50%{border-color:#fff;box-shadow:0 0 12px #ff2e88}}
 #stats{position:fixed;right:18px;top:16px;text-align:right;font-size:14px;
   text-shadow:0 0 6px #000}
@@ -130,6 +133,18 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;
 .dose-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:#cde}
 .dose-row .t{color:var(--neon-amber)}
 .contact{font-size:13px;padding:4px 0;color:#fbd}
+#invPanel .body{width:min(88vw,480px);background:#0a0614;border:1px solid var(--neon-amber);
+  border-radius:14px;padding:20px;box-shadow:0 0 30px rgba(255,176,30,.35)}
+#invPanel h3{color:var(--neon-amber);font-weight:300;letter-spacing:3px;margin-bottom:4px}
+#invPanel .hint{font-size:11px;color:#997;margin-bottom:12px}
+#invGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.invItem{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.18);border-radius:10px;
+  padding:10px 8px;text-align:center;cursor:pointer;font-size:12px;color:#dde;position:relative}
+.invItem:hover{border-color:var(--neon-amber);background:rgba(255,176,30,.08)}
+.invItem .ic{font-size:26px;display:block;margin-bottom:4px}
+.invItem .cnt{position:absolute;top:4px;right:7px;font-weight:700;color:#fff}
+.invItem .illegal{display:block;font-size:9px;color:#f66;letter-spacing:1px;margin-top:2px}
+.invItem.empty{opacity:.35;cursor:default}
 #mapPanel .body{width:min(80vw,560px);background:#05050f;border:1px solid var(--neon-purple);
   border-radius:12px;padding:18px;box-shadow:0 0 40px rgba(160,46,255,.4)}
 #mapCanvas{width:100%;image-rendering:pixelated;border:1px solid #223;border-radius:6px;background:#02020a}
@@ -235,6 +250,7 @@ body.touch #joyL,body.touch #joyR{display:block}
     <div class="bar" id="b-psy"><b>ПСИХОДЕЛИКИ</b><i></i></div>
     <div class="bar" id="b-opi"><b>ОПИАТЫ/ДИССО</b><i></i></div>
     <div class="bar" id="b-crave"><b>ТЯГА (МЕФ)</b><i></i></div>
+    <div class="bar" id="b-heat"><b>ПАЛЕВО</b><i></i></div>
   </div>
   <div id="hotbar"></div>
   <div id="interact-hint"></div>
@@ -254,6 +270,13 @@ body.touch #joyL,body.touch #joyR{display:block}
   <div class="ph-sec"><h4>Журнал доз</h4><div id="phLog" style="font-size:11px;color:#89a"></div></div>
   <div class="ph-sec"><h4>Контакты</h4><div id="phContacts"></div></div>
   <div class="ph-sec"><h4>Harm Reduction</h4><div id="phHarm" style="font-size:11px;color:#7c8"></div></div>
+</div></div>
+
+<!-- Инвентарь -->
+<div id="invPanel" class="panel"><div class="body">
+  <h3>🎒 ИНВЕНТАРЬ · I</h3>
+  <div class="hint">Клик по предмету — положить в выбранный слот хотбара (сначала выбери слот клавишами 1–6). Красная метка = за это принимает патруль.</div>
+  <div id="invGrid"></div>
 </div></div>
 
 <!-- Карта -->
@@ -305,7 +328,8 @@ body.touch #joyL,body.touch #joyR{display:block}
   <button class="bigbtn" id="btnStart">ВОЙТИ В НОЧЬ</button><br>
   <button class="bigbtn ghost" id="btnContinue" style="display:none">Продолжить сохранённую ночь</button>
   <div class="ctl">WASD — движение · SHIFT — бег · SPACE — прыжок/ритм · E — взаимодействие · ЛКМ — принять вещество<br>
-  1-6 — хотбар · F — телефон · TAB — карта · V — камера · H — медик · ESC — пауза</div>
+  1-6 — хотбар · I — инвентарь · F — телефон · TAB — карта · V — камера · H — медик · ESC — пауза<br>
+  Маркеры: 💊 дилер · 🐱 кот-наставник · ➕ медик · ❗ нужна помощь · 💬 поболтать · 🕶 ПАТРУЛЬ — не пались рядом</div>
 </div></div>
 
 <div id="joyL"><div class="knob"></div></div>
@@ -334,7 +358,8 @@ const SUB = {
   antidote:  {icon:'🧪', name:'Антидот',     ch:'aid',  onset:0,  peak:1,  dur:1,   pow:0,   tox:-.35,price:1200, method:'drink'},
   pinkline:  {icon:'🌸', name:'Розовая дорожка', ch:'stim', onset:2, peak:25, dur:110, pow:1.3, tox:.10, price:0, method:'snort', empath:1.4, crave:.5, legend:1},
 };
-const HOTBAR = ['beer','meph','mdma','ket','water','antidote'];
+const HOTBAR_DEFAULT = ['beer','meph','mdma','ket','water','antidote'];
+const isIllegal = id => { const c = SUB[id].ch; return c!=='alco' && c!=='aid'; };
 
 // Состояние игрока / ночи
 const S = {
@@ -344,6 +369,7 @@ const S = {
   crave:0, mephTol:0, doses:[], log:[],
   inv:{beer:2, meph:0, coke:0, mdma:0, lsd:0, ket:0, her:0, water:1, antidote:0, vodka:0, cocktail:0, pinkline:0},
   slot:0, gameMin:0, // минут с 23:00
+  heat:0, hotbar:[...HOTBAR_DEFAULT], // «палево» и настраиваемый хотбар
   contacts:['🐱 Мяу-дилер (главный танцпол)'],
   tripReports:[], serotoninStorm:false, combo:0,
   settings:{strobe:true, trip:1, alcoOnly:false, harm:true, vol:.7},
@@ -387,9 +413,57 @@ function takeDose(id, opts={}){
   S.tox = Math.max(0, Math.min(1.2, S.tox + tox));
   if (s.crave){ S.crave = 0; S.mephTol = Math.min(1, S.mephTol + .12); }
   if (s.ch==='aid' && s.tox<0) toast(id==='water'?'💧 Полегчало':'🧪 Токсичность сбита');
+  // ПАЛЕВО: употребление нелегального на виду. В safe-зонах почти не палит,
+  // в открытых — палит, рядом с патрулём — палит жёстко.
+  if (isIllegal(id)){
+    const z = currentZone(), gd = nearestGuardDist();
+    if (z?.safe) addHeat(3);
+    else {
+      addHeat(gd < 25 ? 42 : 14);
+      if (gd < 25) toast('👮 Патруль ВИДЕЛ, как ты закидываешься! Уходи в туалеты или бункер');
+      else if (S.settings.harm) toast('🕶 Открытая зона — так можно спалиться. Кабинки безопаснее');
+    }
+  }
   audio.punch();
   if (s.method==='snort') fxPowderPuff();
   return true;
+}
+
+/* ── ПАЛЕВО и патруль ──
+   Палево растёт: употребление/покупка нелегального в открытых зонах,
+   особенно рядом с патрулём (🕶). Пороги: 40 — патруль насторожился,
+   70 — активный розыск (погоня), поимка — штраф, изъятие стаффа, час ночи.
+   Спадает само; в safe-зонах (туалеты/бункер/VIP/чилл/подземка) — быстрее. */
+let heatWarned40 = false, heatWarned70 = false;
+function addHeat(v){
+  S.heat = Math.min(100, S.heat + v);
+  if (S.heat>=40 && !heatWarned40){ heatWarned40=true; toast('🕶 Патруль что-то заметил. Веди себя тише'); }
+  if (S.heat>=70 && !heatWarned70){ heatWarned70=true; toast('👮 ПАЛЕВО! Тебя ищут — беги в safe-зону и пережди'); }
+}
+function updateHeat(dtMin){
+  const z = currentZone();
+  S.heat = Math.max(0, S.heat - dtMin * (z?.safe ? 5 : 1.4));
+  if (S.heat < 35) heatWarned40 = false;
+  if (S.heat < 60) heatWarned70 = false;
+}
+function nearestGuardDist(){
+  let bd = 1e9;
+  for (const n of npcs) if (n.guard){
+    const d = Math.hypot(n.mesh.position.x-player.pos.x, n.mesh.position.z-player.pos.z);
+    if (d<bd) bd = d;
+  }
+  return bd;
+}
+function busted(){
+  let seized = 0;
+  for (const id in S.inv) if (isIllegal(id)){ seized += S.inv[id]; S.inv[id] = 0; }
+  const fine = Math.min(S.money, 1000);
+  S.money -= fine; S.heat = 0; S.gameMin += 50;
+  player.pos.set(0,0,125); // выкинули к воротам
+  toast(`👮 Приняли. Штраф ₽${fine}, изъято ${seized} шт, потерян почти час. Скажи спасибо, что не увезли.`);
+  S.tripReports.push('Задержание патрулём');
+  S.vibe = Math.max(0, S.vibe - 25);
+  saveGame();
 }
 
 function serotoninStorm(){
@@ -521,14 +595,15 @@ function beatFlash(delay){ setTimeout(()=>{ beatPulseT = 1; }, Math.max(0,delay*
 /* ═══ [S5] МИР ═══════════════════════════════════════════════════════════ */
 let renderer, scene, camera, worldGroup, clock;
 let player, playerMesh, crowd, lasers=[], strobes=[], smokes=[], pool;
+// safe:true — патруль сюда не суётся, употребление почти не палит
 const ZONES = [ // x,z,r,имя,цвет для карты
   {x:0,   z:-40,  r:55, name:'ГЛАВНЫЙ ТАНЦПОЛ', c:'#ff2e88', dance:true},
-  {x:-150,z:-120, r:40, name:'ТЕХНО-БУНКЕР',    c:'#a02eff', dance:true},
-  {x:140, z:-100, r:38, name:'VIP-ЗОНА',        c:'#ffb01e'},
+  {x:-150,z:-120, r:40, name:'ТЕХНО-БУНКЕР',    c:'#a02eff', dance:true, safe:true},
+  {x:140, z:-100, r:38, name:'VIP-ЗОНА',        c:'#ffb01e', safe:true},
   {x:90,  z:40,   r:25, name:'БАР',             c:'#39ff6a'},
-  {x:-80, z:50,   r:20, name:'ТУАЛЕТЫ',         c:'#19f0ff'},
-  {x:-160,z:10,   r:30, name:'ЧИЛЛ-ЗОНА',       c:'#ff7300'},
-  {x:170, z:-170, r:26, name:'ПОДЗЕМНЫЙ УРОВЕНЬ',c:'#666'},
+  {x:-80, z:50,   r:20, name:'ТУАЛЕТЫ',         c:'#19f0ff', safe:true},
+  {x:-160,z:10,   r:30, name:'ЧИЛЛ-ЗОНА',       c:'#ff7300', safe:true},
+  {x:170, z:-170, r:26, name:'ПОДЗЕМНЫЙ УРОВЕНЬ',c:'#666',   safe:true},
   {x:40,  z:90,   r:18, name:'МЕДПУНКТ',        c:'#fff'},
   {x:0,   z:130,  r:20, name:'ВХОД',            c:'#888'},
 ];
@@ -694,12 +769,36 @@ function makeHuman(color, hairColor){
   g.userData.body = body; g.userData.head = head;
   return g;
 }
+// Маркер-подсказка над головой: с кем можно взаимодействовать и кто опасен
+function makeMarker(emoji){
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.font = '96px serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(emoji, 64, 72);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), transparent:true, depthTest:false}));
+  spr.scale.setScalar(1.5); spr.position.y = 3.2; spr.renderOrder = 999;
+  return spr;
+}
+function markerFor(def){
+  if (def.mascot) return '🐱';
+  if (def.dealer) return '💊';
+  if (def.medic)  return '➕';
+  if (def.guard)  return '🕶';
+  if (def.troll)  return '☠️';
+  if (def.stuck)  return '❗';
+  if (def.raver)  return '💬';
+  return null;
+}
 function addNPC(def){
   const mesh = makeHuman(def.color||0x8888aa, def.hair);
   mesh.position.set(def.x, 0, def.z);
   if (def.mascot){ mesh.scale.setScalar(1.25); mesh.userData.body.material.emissive = new THREE.Color(0xff88cc); mesh.userData.body.material.emissiveIntensity=.4; }
+  const mk = markerFor(def);
+  let marker = null;
+  if (mk){ marker = makeMarker(mk); mesh.add(marker); }
   worldGroup.add(mesh);
-  const npc = {...def, mesh, cool:0, cycle:Math.random()*100};
+  const npc = {...def, mesh, marker, cool:0, cycle:Math.random()*100};
   npcs.push(npc); return npc;
 }
 function spawnNPCs(){
@@ -718,6 +817,13 @@ function spawnNPCs(){
     stock:['beer','vodka','cocktail','water'], priceMul:1, legalOnly:true});
   addNPC({x:42, z:87, name:'Медик', medic:true, color:0xeeeeee});
   addNPC({x:168, z:-160, name:'Передозный тролль', troll:true, color:0x113311});
+  // Патруль «в штатском»: ходят по открытым зонам, при палеве ≥70 — погоня
+  const patrolZones = ZONES.filter(z=>!z.safe);
+  for (let i=0;i<3;i++){
+    const z = patrolZones[i % patrolZones.length];
+    addNPC({x:z.x+10, z:z.z+10, name:'Патруль (в штатском)', guard:true,
+      color:0x21263a, hair:0x111111, wp:null});
+  }
   // Обычные рейверы с циклами употребления (ищут→принимают→пикуют→отъезжают)
   for (let i=0;i<14;i++){
     const z = ZONES[Math.floor(Math.random()*6)];
@@ -731,6 +837,33 @@ function updateNPCs(dt){
   for (const n of npcs){
     n.cycle += dt;
     const m = n.mesh;
+    if (n.marker) n.marker.position.y = 3.2 + Math.sin(n.cycle*3)*.15; // маркер парит
+    if (n.guard){
+      const dx = player.pos.x-m.position.x, dz = player.pos.z-m.position.z;
+      const d = Math.hypot(dx,dz);
+      const chasing = S.heat>=70 && d<60 && !currentZone()?.safe;
+      if (chasing){
+        if (!n.wasChasing){ n.wasChasing=true; toast('👮 ЗА ТОБОЙ ИДУТ! Отрывайся или ныряй в safe-зону'); }
+        const sp = 7.5; // быстрее шага, медленнее бега — шанс уйти есть
+        m.position.x += dx/d*sp*dt; m.position.z += dz/d*sp*dt;
+        m.rotation.y = Math.atan2(dx,dz);
+        if (d<2.5){ n.catchT=(n.catchT||0)+dt; if (n.catchT>1.2){ n.catchT=0; busted(); } }
+        else n.catchT=0;
+      } else {
+        n.wasChasing = false; n.catchT = 0;
+        // патрулирование по открытым зонам
+        if (!n.wp || Math.hypot(n.wp.x-m.position.x, n.wp.z-m.position.z)<3){
+          const oz = ZONES.filter(z=>!z.safe);
+          const z = oz[Math.floor(Math.random()*oz.length)];
+          const a = Math.random()*Math.PI*2, r = Math.random()*z.r*.7;
+          n.wp = {x:z.x+Math.cos(a)*r, z:z.z+Math.sin(a)*r};
+        }
+        const wx = n.wp.x-m.position.x, wz = n.wp.z-m.position.z, wd = Math.hypot(wx,wz)||1;
+        m.position.x += wx/wd*2.2*dt; m.position.z += wz/wd*2.2*dt;
+        m.rotation.y = Math.atan2(wx,wz);
+      }
+      continue;
+    }
     if (n.raver){
       // цикл: seek → use → peak → crash → seek...
       const t = n.cycle % 60;
@@ -1032,6 +1165,7 @@ function interact(){
   if (od.active){ od.mash += 9; return; }
   const n = nearestNPC();
   if (!n) return;
+  if (n.guard){ toast('🕶 «Всё в порядке?» Кивни и иди дальше.'); addHeat(S.lvl.psy>.5||S.lvl.opi>.5 ? 12 : 0); return; }
   if (n.dealer) openShop(n);
   else if (n.medic){ callMedic(); }
   else if (n.troll) openTroll(n);
@@ -1078,6 +1212,11 @@ function openShop(n){
       if (n.freebie) n.freebie = false;
       if (!S.contacts.includes(n.name)) S.contacts.push(n.name);
       toast(`Купил: ${s.name}`);
+      // сделка на виду у патруля — палево
+      if (isIllegal(id)){
+        const z = currentZone(), gd = nearestGuardDist();
+        if (!z?.safe) addHeat(gd < 30 ? 25 : 8);
+      }
     };
     opts.appendChild(b);
   }
@@ -1174,6 +1313,7 @@ function saveGame(){
     store.set(JSON.stringify({
       money:S.money, rep:S.rep, vibe:S.vibe, tox:S.tox, inv:S.inv, gameMin:S.gameMin,
       mephTol:S.mephTol, crave:S.crave, log:S.log, contacts:S.contacts,
+      heat:S.heat, hotbar:S.hotbar,
       tripReports:S.tripReports, tutorial:S.tutorial, settings:S.settings,
       pos:[player.pos.x,player.pos.y,player.pos.z],
     }));
@@ -1186,6 +1326,8 @@ function loadGame(){
     Object.assign(S, {money:d.money, rep:d.rep, vibe:d.vibe, tox:d.tox, inv:d.inv,
       gameMin:d.gameMin, mephTol:d.mephTol, crave:d.crave, log:d.log,
       contacts:d.contacts, tripReports:d.tripReports, tutorial:d.tutorial});
+    if (typeof d.heat === 'number') S.heat = d.heat;
+    if (Array.isArray(d.hotbar) && d.hotbar.every(id=>SUB[id])) S.hotbar = d.hotbar;
     if (d.settings) Object.assign(S.settings, d.settings);
     if (d.pos) player.pos.set(...d.pos);
     return true;
@@ -1211,23 +1353,26 @@ function updateHUD(){
   el('b-opi').querySelector('i').style.width = Math.min(100,S.lvl.opi*100)+'%';
   el('b-crave').querySelector('i').style.width = S.crave*100+'%';
   el('b-crave').classList.toggle('blink', S.crave>.6);
+  el('b-heat').querySelector('i').style.width = S.heat+'%';
+  el('b-heat').classList.toggle('blink', S.heat>=70);
   el('stMoney').textContent = S.money;
   el('stRep').textContent = S.rep;
   el('stTol').textContent = S.mephTol>0.05 ? `толерантность к мефу ${(S.mephTol*100)|0}%` : '';
   el('clock').textContent = fmtClock(S.gameMin);
   const z = currentZone(); el('zone-label').textContent = z ? z.name : 'ТЕРРИТОРИЯ';
   el('rhythm').style.display = inDanceZone() ? 'block' : 'none';
-  // хотбар
+  // хотбар (слоты переназначаются из инвентаря по I)
   const hb = el('hotbar');
   if (!hb.children.length)
-    HOTBAR.forEach((id,i)=>{
+    S.hotbar.forEach((id,i)=>{
       const d = document.createElement('div'); d.className='slot';
-      d.innerHTML = `<span class="k">${i+1}</span>${SUB[id].icon}<span class="n"></span>`;
+      d.innerHTML = `<span class="k">${i+1}</span><span class="ic"></span><span class="n"></span>`;
       hb.appendChild(d);
     });
-  HOTBAR.forEach((id,i)=>{
+  S.hotbar.forEach((id,i)=>{
     const d = hb.children[i];
     d.classList.toggle('sel', S.slot===i);
+    d.querySelector('.ic').textContent = SUB[id].icon;
     d.querySelector('.n').textContent = S.inv[id]||0;
     d.style.opacity = S.inv[id]>0 ? 1 : .4;
   });
@@ -1235,7 +1380,9 @@ function updateHUD(){
   const n = nearestNPC(), hint = el('interact-hint');
   if (n && !el('dialog').classList.contains('on')){
     hint.style.display='block';
-    hint.textContent = `[E] ${n.name}` + (n.dealer?' — торговля':'') + (n.medic?' — помощь':'');
+    hint.textContent = n.guard
+      ? '🕶 Патруль. Лучше пройти мимо'
+      : `[E] ${n.name}` + (n.dealer?' — торговля':'') + (n.medic?' — помощь':'') + (n.stuck&&!n.helped?' — нужна помощь':'');
   } else hint.style.display='none';
 }
 function updatePhone(){
@@ -1249,8 +1396,26 @@ function updatePhone(){
   el('phLog').innerHTML = S.log.slice(-8).reverse().join('<br>');
   el('phContacts').innerHTML = S.contacts.map(c=>`<div class="contact">${c}</div>`).join('');
   el('phHarm').innerHTML = S.settings.harm
-    ? `Пей воду каждые 30 мин.<br>Меф: пик прошёл — пауза минимум ${(SUB.meph.dur*.8)|0}м.<br>Не мешай стимы с алкоголем.<br>Плохо → H, медики не сдают.`
+    ? `Пей воду каждые 30 мин.<br>Меф: пик прошёл — пауза минимум ${(SUB.meph.dur*.8)|0}м.<br>Не мешай стимы с алкоголем.<br>Плохо → H, медики не сдают.<br><b>Патруль (🕶):</b> употребление/сделки в открытых зонах поднимают ПАЛЕВО. ≥70 — за тобой идут. Пунктирные зоны на карте (туалеты, бункер, VIP, чилл, подземка) — там тихо и палево спадает.`
     : 'HR-режим выключен.';
+}
+// Инвентарь (I): все вещества, клик кладёт предмет в выбранный слот хотбара
+function renderInv(){
+  const grid = el('invGrid'); grid.innerHTML='';
+  for (const id in SUB){
+    if (SUB[id].legend && !S.inv[id]) continue; // легендарки не светим заранее
+    const s = SUB[id], cnt = S.inv[id]||0;
+    const d = document.createElement('div');
+    d.className = 'invItem' + (cnt? '' : ' empty');
+    d.innerHTML = `<span class="ic">${s.icon}</span>${s.name}
+      <span class="cnt">${cnt}</span>${isIllegal(id)?'<span class="illegal">⚠ нелегально</span>':''}`;
+    d.onclick = ()=>{
+      S.hotbar[S.slot] = id;
+      toast(`Слот ${S.slot+1} → ${s.icon} ${s.name}`);
+      renderInv(); saveGame();
+    };
+    grid.appendChild(d);
+  }
 }
 function drawMap(){
   const c = el('mapCanvas'), ctx2 = c.getContext('2d');
@@ -1258,10 +1423,22 @@ function drawMap(){
   const sx = v => (v+300)/600*512, sz = v => (v+300)/600*512;
   for (const z of ZONES){
     ctx2.beginPath(); ctx2.arc(sx(z.x), sz(z.z), z.r/600*512, 0, 7);
-    ctx2.strokeStyle = z.c; ctx2.stroke();
+    ctx2.strokeStyle = z.c;
+    ctx2.setLineDash(z.safe ? [4,3] : []); // пунктир = safe-зона
+    ctx2.stroke(); ctx2.setLineDash([]);
     ctx2.fillStyle = z.c; ctx2.font='10px sans-serif'; ctx2.textAlign='center';
     ctx2.fillText(z.name, sx(z.x), sz(z.z));
   }
+  // дилеры (розовые ромбы), медик (белый крест), патруль (синие точки)
+  for (const n of npcs){
+    const x = sx(n.mesh.position.x), y = sz(n.mesh.position.z);
+    if (n.dealer){ ctx2.fillStyle='#ff2e88'; ctx2.fillRect(x-3,y-3,6,6); }
+    else if (n.medic){ ctx2.fillStyle='#fff'; ctx2.fillText('+', x, y+3); }
+    else if (n.guard){ ctx2.fillStyle='#4aa3ff'; ctx2.beginPath(); ctx2.arc(x,y,4,0,7); ctx2.fill(); }
+  }
+  ctx2.fillStyle='#889'; ctx2.textAlign='left'; ctx2.font='9px sans-serif';
+  ctx2.fillText('■ дилер   ● патруль   пунктир — safe-зоны', 8, 504);
+  ctx2.textAlign='center'; ctx2.font='10px sans-serif';
   ctx2.fillStyle = '#fff'; ctx2.beginPath();
   ctx2.arc(sx(player.pos.x), sz(player.pos.z), 5, 0, 7); ctx2.fill();
   ctx2.fillText('ТЫ', sx(player.pos.x), sz(player.pos.z)-9);
@@ -1278,6 +1455,7 @@ addEventListener('keydown', e=>{
   if (S.paused || od.active){ if (e.code==='KeyE' && od.active) interact(); if(e.code==='KeyH') callMedic(); return; }
   if (e.code==='KeyE') interact();
   if (e.code==='KeyF'){ el('phone').classList.toggle('on'); if(el('phone').classList.contains('on')){updatePhone(); document.exitPointerLock?.();} else lockPointer(); }
+  if (e.code==='KeyI'){ el('invPanel').classList.toggle('on'); if(el('invPanel').classList.contains('on')){renderInv(); document.exitPointerLock?.();} else lockPointer(); }
   if (e.code==='Tab'){ e.preventDefault(); el('mapPanel').classList.toggle('on'); if(el('mapPanel').classList.contains('on')){drawMap(); document.exitPointerLock?.();} else lockPointer(); }
   if (e.code==='KeyV'){ S.camMode = S.camMode===3?1:3; }
   if (e.code==='KeyH') callMedic();
@@ -1296,7 +1474,7 @@ addEventListener('mousedown', e=>{
       return;
     }
     mouse.down = true;
-    startUse(HOTBAR[S.slot]);
+    startUse(S.hotbar[S.slot]);
   }
 });
 addEventListener('mouseup', ()=>{ mouse.down=false; });
@@ -1309,14 +1487,14 @@ addEventListener('mousemove', e=>{
   }
 });
 function anyPanelOpen(){
-  return ['phone','mapPanel','dialog','pause','odPanel'].some(id=>el(id).classList.contains('on'));
+  return ['phone','mapPanel','dialog','pause','odPanel','invPanel'].some(id=>el(id).classList.contains('on'));
 }
 function lockPointer(){
   if (!('ontouchstart' in window) && !anyPanelOpen()) document.body.requestPointerLock?.();
 }
 function togglePause(){
   if (anyPanelOpen() && !el('pause').classList.contains('on')){
-    ['phone','mapPanel','dialog'].forEach(id=>el(id).classList.remove('on'));
+    ['phone','mapPanel','dialog','invPanel'].forEach(id=>el(id).classList.remove('on'));
     lockPointer(); return;
   }
   S.paused = !S.paused;
@@ -1382,10 +1560,12 @@ el('btnStart').onclick = ()=>boot(false);
 el('btnContinue').onclick = ()=>boot(true);
 if (store.get()) el('btnContinue').style.display='inline-block';
 // отладочные хуки (безопасны в проде)
-window.__dbg = ()=>({inv:S.inv, lvl:S.lvl, doses:S.doses.length, tox:S.tox,
+window.__dbg = ()=>({inv:S.inv, lvl:S.lvl, doses:S.doses.length, tox:S.tox, heat:S.heat|0,
+  guards:npcs.filter(n=>n.guard).length, guardDist:nearestGuardDist()|0,
   pos:[player.pos.x|0, player.pos.z|0], zone:currentZone()?.name});
 window.__take = id=>takeDose(id);
 window.__tp = (x,z)=>player.pos.set(x,0,z);
+window.__heat = v=>addHeat(v);
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -1403,6 +1583,7 @@ function loop(){
     const dtGameMin = dt * TIME_SCALE / 60 * timeMul;
     S.gameMin += dtGameMin;
     updateChemistry(dtGameMin);
+    updateHeat(dtGameMin);
     updatePlayer(dt*timeMul);
     updateNPCs(dt*timeMul);
     updateEvents(dt);
