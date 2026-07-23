@@ -91,6 +91,14 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;
   color:#aaa;letter-spacing:2px;text-transform:uppercase}
 #crosshair{position:fixed;left:50%;top:50%;width:6px;height:6px;margin:-3px;
   border-radius:50%;background:rgba(255,255,255,.7);box-shadow:0 0 6px #fff}
+#minimap{position:fixed;top:16px;left:16px;width:172px;height:172px;border-radius:14px;
+  border:1px solid rgba(255,255,255,.25);background:rgba(2,2,12,.78);
+  box-shadow:0 0 18px rgba(0,0,0,.7)}
+#mmHint{position:fixed;top:190px;left:16px;font-size:9px;color:#667;letter-spacing:1px}
+#wpArrow{position:fixed;top:74px;left:50%;transform:translateX(-50%);text-align:center;
+  display:none;color:var(--neon-cyan);text-shadow:0 0 10px var(--neon-cyan);pointer-events:none}
+#wpArrow .arr{display:inline-block;font-size:28px;line-height:1}
+#wpArrow .d{display:block;font-size:11px;letter-spacing:1px}
 #interact-hint{position:fixed;left:50%;top:58%;transform:translateX(-50%);
   background:rgba(0,0,0,.7);border:1px solid var(--neon-cyan);padding:6px 14px;border-radius:6px;
   font-size:14px;display:none;box-shadow:0 0 14px rgba(25,240,255,.4)}
@@ -236,6 +244,9 @@ body.touch #joyL,body.touch #joyR{display:block}
 <div id="hud">
   <div id="clock">23:00</div>
   <div id="zone-label">ВХОД</div>
+  <div id="wpArrow"><span class="arr">▲</span><span class="d"></span></div>
+  <canvas id="minimap" width="172" height="172"></canvas>
+  <div id="mmHint">TAB — большая карта · клик по ней ставит маршрут</div>
   <div id="crosshair"></div>
   <div id="stats">
     <div class="money">₽ <span id="stMoney">1500</span></div>
@@ -459,7 +470,7 @@ function busted(){
   for (const id in S.inv) if (isIllegal(id)){ seized += S.inv[id]; S.inv[id] = 0; }
   const fine = Math.min(S.money, 1000);
   S.money -= fine; S.heat = 0; S.gameMin += 50;
-  player.pos.set(0,0,125); // выкинули к воротам
+  player.pos.set(0,0,92); // выкинули к воротам
   toast(`👮 Приняли. Штраф ₽${fine}, изъято ${seized} шт, потерян почти час. Скажи спасибо, что не увезли.`);
   S.tripReports.push('Задержание патрулём');
   S.vibe = Math.max(0, S.vibe - 25);
@@ -594,18 +605,20 @@ function beatFlash(delay){ setTimeout(()=>{ beatPulseT = 1; }, Math.max(0,delay*
 
 /* ═══ [S5] МИР ═══════════════════════════════════════════════════════════ */
 let renderer, scene, camera, worldGroup, clock;
-let player, playerMesh, crowd, lasers=[], strobes=[], smokes=[], pool;
-// safe:true — патруль сюда не суётся, употребление почти не палит
+let player, playerMesh, crowd, crowdHeads, stars, waypointBeacon, lasers=[], strobes=[], smokes=[], pool;
+// safe:true — патруль сюда не суётся, употребление почти не палит.
+// Компактная планировка: всё в пешей доступности, зоны почти касаются.
+const WORLD_B = 220; // граница мира для карт и клампа
 const ZONES = [ // x,z,r,имя,цвет для карты
-  {x:0,   z:-40,  r:55, name:'ГЛАВНЫЙ ТАНЦПОЛ', c:'#ff2e88', dance:true},
-  {x:-150,z:-120, r:40, name:'ТЕХНО-БУНКЕР',    c:'#a02eff', dance:true, safe:true},
-  {x:140, z:-100, r:38, name:'VIP-ЗОНА',        c:'#ffb01e', safe:true},
-  {x:90,  z:40,   r:25, name:'БАР',             c:'#39ff6a'},
-  {x:-80, z:50,   r:20, name:'ТУАЛЕТЫ',         c:'#19f0ff', safe:true},
-  {x:-160,z:10,   r:30, name:'ЧИЛЛ-ЗОНА',       c:'#ff7300', safe:true},
-  {x:170, z:-170, r:26, name:'ПОДЗЕМНЫЙ УРОВЕНЬ',c:'#666',   safe:true},
-  {x:40,  z:90,   r:18, name:'МЕДПУНКТ',        c:'#fff'},
-  {x:0,   z:130,  r:20, name:'ВХОД',            c:'#888'},
+  {x:0,   z:-30,  r:48, name:'ГЛАВНЫЙ ТАНЦПОЛ', c:'#ff2e88', dance:true},
+  {x:-95, z:-78,  r:34, name:'ТЕХНО-БУНКЕР',    c:'#a02eff', dance:true, safe:true},
+  {x:92,  z:-64,  r:32, name:'VIP-ЗОНА',        c:'#ffb01e', safe:true},
+  {x:62,  z:28,   r:22, name:'БАР',             c:'#39ff6a'},
+  {x:-55, z:34,   r:18, name:'ТУАЛЕТЫ',         c:'#19f0ff', safe:true},
+  {x:-100,z:8,    r:26, name:'ЧИЛЛ-ЗОНА',       c:'#ff7300', safe:true},
+  {x:108, z:-108, r:24, name:'ПОДЗЕМНЫЙ УРОВЕНЬ',c:'#88aaaa', safe:true},
+  {x:30,  z:60,   r:16, name:'МЕДПУНКТ',        c:'#fff'},
+  {x:0,   z:88,   r:18, name:'ВХОД',            c:'#888'},
 ];
 function currentZone(){
   for (const z of ZONES){
@@ -619,138 +632,431 @@ function neonMat(hex, intensity=2){
   return new THREE.MeshStandardMaterial({color:0x111111, emissive:new THREE.Color(hex), emissiveIntensity:intensity});
 }
 
+/* ── Процедурные текстуры на canvas: никаких внешних ассетов ── */
+const rnd = (a,b)=>a+Math.random()*(b-a);
+function canvasTex(w, h, draw, rx=1, ry=1){
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
+function texAsphalt(){ return canvasTex(512,512,(g)=>{ // грязный асфальт с трещинами
+  g.fillStyle='#15151d'; g.fillRect(0,0,512,512);
+  for(let i=0;i<9000;i++){ const v=rnd(12,44)|0;
+    g.fillStyle=`rgb(${v},${v},${v+7})`; g.fillRect(rnd(0,512),rnd(0,512),rnd(1,3),rnd(1,3)); }
+  for(let i=0;i<26;i++){ // масляные пятна и грязь
+    const x=rnd(0,512),y=rnd(0,512),r=rnd(8,42);
+    const gr=g.createRadialGradient(x,y,0,x,y,r);
+    gr.addColorStop(0,'rgba(0,0,0,.35)'); gr.addColorStop(1,'rgba(0,0,0,0)');
+    g.fillStyle=gr; g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
+  g.strokeStyle='rgba(0,0,0,.55)'; g.lineWidth=1.6;
+  for(let i=0;i<9;i++){ g.beginPath(); let x=rnd(0,512),y=rnd(0,512); g.moveTo(x,y);
+    for(let j=0;j<6;j++){ x+=rnd(-60,60); y+=rnd(-60,60); g.lineTo(x,y);} g.stroke(); }
+},36,36); }
+function texFloorTiles(){ return canvasTex(512,512,(g)=>{ // неоновая плитка танцпола
+  g.fillStyle='#050509'; g.fillRect(0,0,512,512);
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+    const h=(x*97+y*57)%360;
+    g.fillStyle=`hsl(${h},85%,7%)`; g.fillRect(x*64+3,y*64+3,58,58);
+    g.strokeStyle=`hsl(${h},100%,58%)`; g.lineWidth=2.5; g.strokeRect(x*64+3,y*64+3,58,58);
+  }
+},10,10); }
+function texConcrete(){ return canvasTex(256,256,(g)=>{ // бетон бункера с подтёками
+  g.fillStyle='#1c1c22'; g.fillRect(0,0,256,256);
+  for(let i=0;i<3200;i++){ const v=rnd(20,52)|0;
+    g.fillStyle=`rgb(${v},${v},${v+4})`; g.fillRect(rnd(0,256),rnd(0,256),1.6,1.6); }
+  for(let i=0;i<10;i++){ const x=rnd(0,256);
+    g.fillStyle='rgba(0,0,0,.22)'; g.fillRect(x,rnd(0,60),rnd(2,7),rnd(60,200)); }
+},4,2); }
+function texMetal(){ return canvasTex(256,256,(g)=>{ // рифлёный металл контейнеров
+  g.fillStyle='#232a33'; g.fillRect(0,0,256,256);
+  for(let x=0;x<256;x+=32){ g.fillStyle='rgba(255,255,255,.06)'; g.fillRect(x,0,4,256);
+    g.fillStyle='rgba(0,0,0,.35)'; g.fillRect(x+16,0,6,256); }
+  for(let i=0;i<300;i++){ g.fillStyle='rgba(120,70,30,.25)'; // ржавчина
+    g.fillRect(rnd(0,256),rnd(0,256),rnd(1,5),rnd(1,3)); }
+},2,1); }
+function texSkyline(){ return canvasTex(1024,256,(g)=>{ // ночной город: окна
+  g.fillStyle='#05050c'; g.fillRect(0,0,1024,256);
+  for(let x=0;x<330;x++)for(let y=0;y<70;y++)
+    if(Math.random()<.10){ g.fillStyle=`hsla(${rnd(30,55)},90%,${rnd(45,70)}%,${rnd(.3,.95)})`;
+      g.fillRect(x*3.1+1, 256-y*3.5-3, 1.7, 2.1); }
+},1,1); }
+function texTent(){ return canvasTex(128,128,(g)=>{ // полосатый тент
+  for(let x=0;x<128;x+=16){ g.fillStyle=(x/16)%2?'#c9c9d6':'#8c2333'; g.fillRect(x,0,16,128); }
+},3,1); }
+
+/* Неоновая вывеска-указатель зоны: видна сквозь стены — навигация в мире */
+function makeSign(text, color){
+  const c = document.createElement('canvas'); c.width=1024; c.height=160;
+  const g = c.getContext('2d');
+  g.font='bold 88px system-ui,sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+  g.shadowColor=color; g.shadowBlur=42; g.fillStyle=color;
+  g.fillText(text,512,80); g.fillText(text,512,80); g.shadowBlur=0;
+  g.fillStyle='rgba(255,255,255,.85)'; g.font='bold 84px system-ui,sans-serif';
+  g.fillText(text,512,80);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({map:t, transparent:true, depthTest:false, opacity:.92}));
+  s.renderOrder = 500; s.scale.set(26,4.1,1);
+  return s;
+}
+/* Стек колонок у сцены */
+function speakerStack(){
+  const g = new THREE.Group();
+  const box = new THREE.MeshStandardMaterial({map:texMetal(), color:0x666a77, roughness:.6});
+  for (let i=0;i<3;i++){
+    const b = new THREE.Mesh(new THREE.BoxGeometry(3.4-i*.5, 2.6, 2.6), box);
+    b.position.y = 1.3 + i*2.6; b.castShadow = true; g.add(b);
+    const cone = new THREE.Mesh(new THREE.CircleGeometry(.85-i*.12, 20), neonMat('#19f0ff',.5));
+    cone.position.set(0, 1.3+i*2.6, 1.31+ (3.4-i*.5)*0); cone.position.z = 1.31; g.add(cone);
+  }
+  return g;
+}
+/* Гирлянда между двумя точками (провис + светящиеся лампочки) */
+function stringLights(p1, p2, color, parent, bulbs=14){
+  const mat = new THREE.MeshStandardMaterial({color:0x111111, emissive:new THREE.Color(color), emissiveIntensity:2});
+  const inst = new THREE.InstancedMesh(new THREE.SphereGeometry(.14,6,5), mat, bulbs);
+  const d = new THREE.Object3D();
+  for (let i=0;i<bulbs;i++){
+    const t = i/(bulbs-1);
+    d.position.set(
+      p1[0]+(p2[0]-p1[0])*t,
+      p1[1]+(p2[1]-p1[1])*t - Math.sin(t*Math.PI)*1.4, // провис
+      p1[2]+(p2[2]-p1[2])*t);
+    d.updateMatrix(); inst.setMatrixAt(i, d.matrix);
+  }
+  parent.add(inst);
+  worldGroup.userData.bulbs.push(mat);
+  return inst;
+}
+
 async function buildWorld(){
   scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x03000a, 0.006);
-  scene.background = new THREE.Color(0x03000a);
+  scene.fog = new THREE.FogExp2(0x03000a, 0.0028); // разреженный туман — далёкая отрисовка
+  scene.background = new THREE.Color(0x02010a);
   worldGroup = new THREE.Group(); scene.add(worldGroup);
+  worldGroup.userData.bulbs = []; // материалы гирлянд (пульс в такт)
+  const ZC = Object.fromEntries(ZONES.map(z=>[z.name,z]));
 
-  // Земля: тёмный асфальт с неоновой сеткой
+  // ── Земля: асфальт + светящиеся дорожки-указатели от входа к зонам ──
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(600,600),
-    new THREE.MeshStandardMaterial({color:0x0a0a12, roughness:.9, metalness:.1}));
-  ground.rotation.x = -Math.PI/2; worldGroup.add(ground);
-  const grid = new THREE.GridHelper(600, 60, 0x220a3a, 0x160828);
-  grid.position.y = .02; worldGroup.add(grid);
-
-  // Свет: тусклый ambient + луна + зональные точки
-  scene.add(new THREE.AmbientLight(0x303050, 1.1));
-  scene.add(new THREE.HemisphereLight(0x3a2a6a, 0x0a0a14, .8));
-  const moon = new THREE.DirectionalLight(0x4455aa, .5); moon.position.set(80,120,40); scene.add(moon);
-
-  // ── Главная сцена: DJ-башня + арка + лазерный веер ──
-  const stage = new THREE.Group(); stage.position.set(0,-0,-85);
-  const booth = new THREE.Mesh(new THREE.BoxGeometry(30,8,10), new THREE.MeshStandardMaterial({color:0x14141c}));
-  booth.position.y = 4; stage.add(booth);
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(46,16), neonMat('#ff2e88',1.4));
-  screen.position.set(0,15,-4); stage.add(screen); stage.userData.screen = screen;
-  for (let i=0;i<7;i++){ // лазеры-веер
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(.06,.6,120,6,1,true),
-      new THREE.MeshBasicMaterial({color:0x19f0ff, transparent:true, opacity:.35, side:THREE.DoubleSide}));
-    beam.position.set((i-3)*6, 12, 0); beam.rotation.x = Math.PI/2.3;
-    stage.add(beam); lasers.push({mesh:beam, phase:i*.9, base:Math.PI/2.3});
+    new THREE.PlaneGeometry(460,460),
+    new THREE.MeshStandardMaterial({map:texAsphalt(), roughness:.92, metalness:.05}));
+  ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; worldGroup.add(ground);
+  const pathMat = new THREE.MeshStandardMaterial({color:0x0a0a14, emissive:0x3a2470, emissiveIntensity:1.1});
+  const ent = ZC['ВХОД'];
+  for (const zn of ['ГЛАВНЫЙ ТАНЦПОЛ','БАР','ЧИЛЛ-ЗОНА','МЕДПУНКТ','ТУАЛЕТЫ']){
+    const z = ZC[zn];
+    const dx=z.x-ent.x, dz=z.z-ent.z, len=Math.hypot(dx,dz);
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(1.1,len), pathMat);
+    p.rotation.order='YXZ'; p.rotation.y = Math.atan2(dx,dz)+Math.PI; p.rotation.x = -Math.PI/2;
+    p.position.set(ent.x+dx/2, .04, ent.z+dz/2);
+    worldGroup.add(p);
   }
+  // лужи после дождя — глянцевые блики от неона
+  for (let i=0;i<14;i++){
+    const pud = new THREE.Mesh(new THREE.CircleGeometry(rnd(1.2,3),18),
+      new THREE.MeshStandardMaterial({color:0x0a1018, roughness:.05, metalness:.9}));
+    pud.rotation.x=-Math.PI/2; pud.position.set(rnd(-140,140),.03,rnd(-120,100));
+    worldGroup.add(pud);
+  }
+
+  // ── Небо: звёзды, луна, скайлайн города с окнами по периметру ──
+  const starGeo = new THREE.BufferGeometry();
+  const SN=1400, sp = new Float32Array(SN*3);
+  for (let i=0;i<SN;i++){
+    const a=Math.random()*Math.PI*2, e=Math.random()*Math.PI*.45+.06, r=700;
+    sp[i*3]=Math.cos(a)*Math.cos(e)*r; sp[i*3+1]=Math.sin(e)*r; sp[i*3+2]=Math.sin(a)*Math.cos(e)*r;
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(sp,3));
+  stars = new THREE.Points(starGeo, new THREE.PointsMaterial({color:0xbfd0ff, size:1.6, sizeAttenuation:false, transparent:true, opacity:.85, fog:false}));
+  scene.add(stars);
+  const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(16,24,18),
+    new THREE.MeshBasicMaterial({color:0xdfe6ff, fog:false}));
+  moonMesh.position.set(300,260,-420); scene.add(moonMesh);
+  const skyTex = texSkyline();
+  for (let s=0;s<4;s++){ // 4 стены города вокруг площадки
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(560,64), new THREE.MeshBasicMaterial({map:skyTex, transparent:false}));
+    wall.position.y = 30;
+    if (s===0){ wall.position.z=-260; }
+    if (s===1){ wall.position.z= 260; wall.rotation.y=Math.PI; }
+    if (s===2){ wall.position.x=-260; wall.rotation.y= Math.PI/2; }
+    if (s===3){ wall.position.x= 260; wall.rotation.y=-Math.PI/2; }
+    scene.add(wall);
+  }
+
+  // ── Свет: ambient + hemi + луна с тенями ──
+  scene.add(new THREE.AmbientLight(0x353558, 1.15));
+  scene.add(new THREE.HemisphereLight(0x3a2a6a, 0x0c0c18, .85));
+  const moon = new THREE.DirectionalLight(0x5566bb, .7);
+  moon.position.set(120,160,-60); moon.castShadow = true;
+  moon.shadow.mapSize.set(2048,2048);
+  Object.assign(moon.shadow.camera, {left:-150,right:150,top:150,bottom:-150,near:20,far:420});
+  moon.shadow.camera.updateProjectionMatrix();
+  moon.shadow.bias = -0.0004;
+  scene.add(moon);
+
+  // ── Забор по периметру + сетка столбов ──
+  const fenceMat = new THREE.MeshStandardMaterial({color:0x1c2028, roughness:.7, metalness:.4});
+  const postGeo = new THREE.CylinderGeometry(.12,.12,3.2,6);
+  const postsPerSide = 54, posts = new THREE.InstancedMesh(postGeo, fenceMat, postsPerSide*4);
+  const pd = new THREE.Object3D(); let pi=0;
+  for (let s=0;s<4;s++) for (let i=0;i<postsPerSide;i++){
+    const t = -212 + i*(424/(postsPerSide-1));
+    pd.position.set(s===0?t:(s===1?t:(s===2?-212:212)), 1.6, s===0?-212:(s===1?212:t));
+    pd.updateMatrix(); posts.setMatrixAt(pi++, pd.matrix);
+  }
+  worldGroup.add(posts);
+  for (let s=0;s<4;s++) for (let h of [1.0, 2.6]){
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(s<2?424:.3, .12, s<2?.3:424), fenceMat);
+    rail.position.set(s===2?-212:(s===3?212:0), h, s===0?-212:(s===1?212:0));
+    worldGroup.add(rail);
+  }
+
+  // ── ВХОД: неоновая арка + турникеты ──
+  const gate = new THREE.Group(); gate.position.set(ent.x,0,ent.z+6);
+  const pylonMat = new THREE.MeshStandardMaterial({map:texConcrete(), color:0x8888aa, roughness:.8});
+  for (const px of [-8,8]){
+    const pyl = new THREE.Mesh(new THREE.BoxGeometry(2.2,11,2.2), pylonMat);
+    pyl.position.set(px,5.5,0); pyl.castShadow=true; gate.add(pyl);
+  }
+  const beamTop = new THREE.Mesh(new THREE.BoxGeometry(18.5,1.6,2.4), pylonMat);
+  beamTop.position.y=11.2; beamTop.castShadow=true; gate.add(beamTop);
+  const gateSign = makeSign('NEON TRIP', '#ff2e88'); gateSign.position.y=13.6; gateSign.scale.set(20,3.2,1); gate.add(gateSign);
+  for (const tx of [-4,0,4]){
+    const turn = new THREE.Mesh(new THREE.BoxGeometry(1.2,1.1,.4), fenceMat);
+    turn.position.set(tx,.55,0); gate.add(turn);
+  }
+  worldGroup.add(gate);
+
+  // ── ГЛАВНАЯ СЦЕНА (юг танцпола): башни, экран, лазеры, колонки, DJ ──
+  const dzc = ZC['ГЛАВНЫЙ ТАНЦПОЛ'];
+  const stage = new THREE.Group(); stage.position.set(dzc.x, 0, dzc.z-34);
+  const metalM = new THREE.MeshStandardMaterial({map:texMetal(), color:0x777d8c, roughness:.55, metalness:.5});
+  const booth = new THREE.Mesh(new THREE.BoxGeometry(26,7,9), metalM);
+  booth.position.y=3.5; booth.castShadow=true; stage.add(booth);
+  const dj = makeHuman(0x111111, 0xff2e88); dj.position.set(0,7,0); dj.scale.setScalar(.9); stage.add(dj);
+  stage.userData.dj = dj;
+  for (const tx of [-16,16]){ // фермы-башни
+    const tower = new THREE.Mesh(new THREE.BoxGeometry(2.4,20,2.4), metalM);
+    tower.position.set(tx,10,0); tower.castShadow=true; stage.add(tower);
+  }
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(36,13), neonMat('#ff2e88',1.4));
+  screen.position.set(0,14.5,-3.6); stage.add(screen); stage.userData.screen = screen;
+  for (let i=0;i<9;i++){ // лазерный веер с башен
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(.05,.5,130,6,1,true),
+      new THREE.MeshBasicMaterial({color:0x19f0ff, transparent:true, opacity:.35, side:THREE.DoubleSide, depthWrite:false}));
+    beam.position.set((i-4)*4.2, 15, 0); beam.rotation.x = Math.PI/2.3;
+    stage.add(beam); lasers.push({mesh:beam, phase:i*.8, base:Math.PI/2.3});
+  }
+  for (const sx of [-21,21]){ const st = speakerStack(); st.position.set(sx,0,2); st.rotation.y = sx<0?.4:-.4; stage.add(st); }
+  const barrier = new THREE.Mesh(new THREE.BoxGeometry(30,.9,.3), fenceMat);
+  barrier.position.set(0,.45,7); stage.add(barrier);
   worldGroup.add(stage); worldGroup.userData.stage = stage;
+
+  // Танцпол: неоновая плитка, пульсирует в такт
+  const floorTex = texFloorTiles();
+  const floorMat = new THREE.MeshStandardMaterial({map:floorTex, emissiveMap:floorTex,
+    emissive:0xffffff, emissiveIntensity:.3, roughness:.35, metalness:.2});
+  const dance = new THREE.Mesh(new THREE.CircleGeometry(dzc.r*.8, 40), floorMat);
+  dance.rotation.x=-Math.PI/2; dance.position.set(dzc.x,.06,dzc.z); worldGroup.add(dance);
+  worldGroup.userData.floorMat = floorMat;
+  // конфетти на полу
+  const confMat = new THREE.MeshBasicMaterial({side:THREE.DoubleSide});
+  const conf = new THREE.InstancedMesh(new THREE.PlaneGeometry(.16,.16), confMat, 350);
+  const cd = new THREE.Object3D();
+  for (let i=0;i<350;i++){
+    const a=Math.random()*Math.PI*2, r=Math.sqrt(Math.random())*dzc.r*.9;
+    cd.position.set(dzc.x+Math.cos(a)*r,.08,dzc.z+Math.sin(a)*r);
+    cd.rotation.set(-Math.PI/2,0,Math.random()*Math.PI); cd.updateMatrix();
+    conf.setMatrixAt(i,cd.matrix);
+    conf.setColorAt(i,new THREE.Color().setHSL(Math.random(),.9,.6));
+  }
+  worldGroup.add(conf);
 
   // Стробы над танцполом
   for (let i=0;i<6;i++){
-    const l = new THREE.PointLight(0xffffff, 0, 90, 1.6);
-    l.position.set((i%3-1)*35, 18, -40 - Math.floor(i/3)*30);
+    const l = new THREE.PointLight(0xffffff, 0, 80, 1.6);
+    l.position.set(dzc.x+(i%3-1)*22, 15, dzc.z-8-Math.floor(i/3)*20);
     scene.add(l); strobes.push(l);
   }
 
-  // ── Техно-бункер: тёмная коробка с красным нутром ──
-  const bunker = new THREE.Group(); bunker.position.set(-150,0,-120);
-  const shell = new THREE.Mesh(new THREE.BoxGeometry(70,16,60),
+  // ── ТЕХНО-БУНКЕР: бетонная коробка, фиолетовый портал, красное нутро ──
+  const bzc = ZC['ТЕХНО-БУНКЕР'];
+  const bunker = new THREE.Group(); bunker.position.set(bzc.x,0,bzc.z);
+  const concM = new THREE.MeshStandardMaterial({map:texConcrete(), color:0x9a9aa8, roughness:.85});
+  const shellOut = new THREE.Mesh(new THREE.BoxGeometry(52,13,44), concM);
+  shellOut.position.y=6.5; shellOut.castShadow=true; bunker.add(shellOut);
+  const shellIn = new THREE.Mesh(new THREE.BoxGeometry(51,12.6,43),
     new THREE.MeshStandardMaterial({color:0x0c0c10, side:THREE.BackSide}));
-  shell.position.y = 8; bunker.add(shell);
-  const doorGlow = new THREE.Mesh(new THREE.PlaneGeometry(8,10), neonMat('#a02eff',3));
-  doorGlow.position.set(0,5,30.2); bunker.add(doorGlow);
-  const red = new THREE.PointLight(0xff2020, 8, 70, 1.8); red.position.y = 10; bunker.add(red);
+  shellIn.position.y=6.4; bunker.add(shellIn);
+  const doorGlow = new THREE.Mesh(new THREE.PlaneGeometry(7,9), neonMat('#a02eff',3));
+  doorGlow.position.set(0,4.5,22.3); bunker.add(doorGlow);
+  const red = new THREE.PointLight(0xff2020, 8, 60, 1.8); red.position.y=9; bunker.add(red);
   worldGroup.add(bunker);
 
-  // ── VIP: платформа + светящийся бассейн ──
-  const vip = new THREE.Group(); vip.position.set(140,0,-100);
-  const plat = new THREE.Mesh(new THREE.CylinderGeometry(34,36,3,24),
-    new THREE.MeshStandardMaterial({color:0x1a1420, metalness:.6, roughness:.3}));
-  plat.position.y = 1.5; vip.add(plat);
-  pool = new THREE.Mesh(new THREE.CylinderGeometry(12,12,.6,32), neonMat('#19f0ff',1.8));
-  pool.position.set(8,3.2,-6); vip.add(pool);
-  const vl = new THREE.PointLight(0xffb01e, 5, 60, 1.6); vl.position.set(0,10,0); vip.add(vl);
+  // ── VIP: платформа, бассейн, лежаки, гирлянды ──
+  const vzc = ZC['VIP-ЗОНА'];
+  const vip = new THREE.Group(); vip.position.set(vzc.x,0,vzc.z);
+  const plat = new THREE.Mesh(new THREE.CylinderGeometry(26,28,2.6,28),
+    new THREE.MeshStandardMaterial({color:0x1a1420, metalness:.65, roughness:.25}));
+  plat.position.y=1.3; plat.castShadow=true; vip.add(plat);
+  pool = new THREE.Mesh(new THREE.CylinderGeometry(9,9,.6,32), neonMat('#19f0ff',1.8));
+  pool.position.set(6,2.8,-5); vip.add(pool);
+  for (let i=0;i<5;i++){
+    const lounge = new THREE.Mesh(new THREE.BoxGeometry(1.1,.4,2.6),
+      new THREE.MeshStandardMaterial({color:0x2a2033, roughness:.6}));
+    const a = Math.PI*.2+i*.45; lounge.position.set(Math.cos(a)*17,2.8,Math.sin(a)*17);
+    lounge.rotation.y=-a; vip.add(lounge);
+  }
+  for (const px of [[-20,0],[0,-20],[20,0],[0,20]]){
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(.14,.14,6,6), fenceMat);
+    pole.position.set(px[0],3+2.6,px[1]); vip.add(pole);
+  }
+  stringLights([-20,8.5,0],[0,8.5,-20],'#ffb01e',vip); stringLights([0,8.5,-20],[20,8.5,0],'#ff2e88',vip);
+  stringLights([20,8.5,0],[0,8.5,20],'#19f0ff',vip);  stringLights([0,8.5,20],[-20,8.5,0],'#a02eff',vip);
+  const vl = new THREE.PointLight(0xffb01e, 5, 55, 1.6); vl.position.set(0,9,0); vip.add(vl);
   worldGroup.add(vip);
 
-  // ── Бар ──
-  const bar = new THREE.Group(); bar.position.set(90,0,40);
-  const counter = new THREE.Mesh(new THREE.BoxGeometry(24,3,4), neonMat('#39ff6a',.9));
-  counter.position.y = 1.5; bar.add(counter);
-  const barSign = new THREE.Mesh(new THREE.PlaneGeometry(14,3), neonMat('#39ff6a',2.5));
-  barSign.position.set(0,7,0); bar.add(barSign);
+  // ── БАР: стойка, бутылочная стена, табуреты, гирлянда ──
+  const brc = ZC['БАР'];
+  const bar = new THREE.Group(); bar.position.set(brc.x,0,brc.z);
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(20,3,3.2), neonMat('#39ff6a',.7));
+  counter.position.y=1.5; counter.castShadow=true; bar.add(counter);
+  const shelf = new THREE.Mesh(new THREE.BoxGeometry(20,6,1), new THREE.MeshStandardMaterial({color:0x101418}));
+  shelf.position.set(0,3,-4); bar.add(shelf);
+  const bottleMat = new THREE.MeshStandardMaterial({emissive:0xffffff, emissiveIntensity:.9, color:0x111111});
+  const bottles = new THREE.InstancedMesh(new THREE.CylinderGeometry(.16,.16,.8,6), bottleMat, 60);
+  const bd = new THREE.Object3D();
+  for (let i=0;i<60;i++){
+    bd.position.set(-9+ (i%20)*.95, 1.4+Math.floor(i/20)*1.6, -3.9); bd.updateMatrix();
+    bottles.setMatrixAt(i,bd.matrix);
+    bottles.setColorAt(i,new THREE.Color().setHSL(Math.random(),.85,.55));
+  }
+  bar.add(bottles);
+  for (let i=0;i<7;i++){
+    const stool = new THREE.Mesh(new THREE.CylinderGeometry(.45,.35,1.2,8),
+      new THREE.MeshStandardMaterial({color:0x33202a, roughness:.5}));
+    stool.position.set(-8+i*2.7,.6,3.2); bar.add(stool);
+  }
+  for (const px of [[-11,5],[11,5]]){
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(.14,.14,7,6), fenceMat);
+    pole.position.set(px[0],3.5,px[1]); bar.add(pole);
+  }
+  stringLights([-11,6.8,5],[11,6.8,5],'#39ff6a',bar,18);
+  const barLight = new THREE.PointLight(0x39ff6a, 3.5, 35, 1.7); barLight.position.set(0,6,0); bar.add(barLight);
   worldGroup.add(bar);
 
-  // ── Туалеты: блок кабинок ──
-  const wc = new THREE.Group(); wc.position.set(-80,0,50);
-  for (let i=0;i<5;i++){
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(4,6,5),
-      new THREE.MeshStandardMaterial({color:0x101820}));
-    cab.position.set(i*5-10,3,0); wc.add(cab);
+  // ── ТУАЛЕТЫ: ряд кабинок, мигающая трубка ──
+  const wzc = ZC['ТУАЛЕТЫ'];
+  const wc = new THREE.Group(); wc.position.set(wzc.x,0,wzc.z);
+  const cabM = new THREE.MeshStandardMaterial({map:texMetal(), color:0x5a6db0, roughness:.6});
+  for (let i=0;i<6;i++){
+    const cab = new THREE.Mesh(new THREE.BoxGeometry(3.4,5.6,4.2), cabM);
+    cab.position.set(i*4-10,2.8,0); cab.castShadow=true; wc.add(cab);
+    const door = new THREE.Mesh(new THREE.PlaneGeometry(2.6,4.6), new THREE.MeshStandardMaterial({color:0x1a2030}));
+    door.position.set(i*4-10,2.4,2.15); wc.add(door);
   }
-  const wcSign = new THREE.Mesh(new THREE.PlaneGeometry(6,2), neonMat('#19f0ff',2)); wcSign.position.set(0,7.5,0); wc.add(wcSign);
-  worldGroup.add(wc);
+  const wcTube = new THREE.Mesh(new THREE.BoxGeometry(11,.35,.35), neonMat('#19f0ff',2.4));
+  wcTube.position.set(0,6.4,1.5); wc.add(wcTube); wc.userData.tube = wcTube;
+  worldGroup.add(wc); worldGroup.userData.wc = wc;
 
-  // ── Чилл-зона: пуфы + кострище ──
-  const chill = new THREE.Group(); chill.position.set(-160,0,10);
-  for (let i=0;i<8;i++){
-    const puf = new THREE.Mesh(new THREE.SphereGeometry(1.6,10,8),
-      new THREE.MeshStandardMaterial({color:new THREE.Color().setHSL(Math.random(),.6,.35)}));
-    const a = i/8*Math.PI*2; puf.position.set(Math.cos(a)*10,1,Math.sin(a)*10); puf.scale.y=.6; chill.add(puf);
+  // ── ЧИЛЛ-ЗОНА: пуфы, кострище, палатки, гирлянды ──
+  const czc = ZC['ЧИЛЛ-ЗОНА'];
+  const chill = new THREE.Group(); chill.position.set(czc.x,0,czc.z);
+  for (let i=0;i<9;i++){
+    const puf = new THREE.Mesh(new THREE.SphereGeometry(1.5,12,10),
+      new THREE.MeshStandardMaterial({color:new THREE.Color().setHSL(Math.random(),.6,.38), roughness:.9}));
+    const a=i/9*Math.PI*2; puf.position.set(Math.cos(a)*9,.9,Math.sin(a)*9);
+    puf.scale.y=.6; puf.castShadow=true; chill.add(puf);
   }
-  const fire = new THREE.PointLight(0xff6a1e, 6, 40, 1.7); fire.position.y = 2; chill.add(fire);
+  const pit = new THREE.Mesh(new THREE.CylinderGeometry(2.2,2.5,.7,14),
+    new THREE.MeshStandardMaterial({map:texConcrete(), color:0x777}));
+  pit.position.y=.35; chill.add(pit);
+  const flame = new THREE.Mesh(new THREE.ConeGeometry(1.1,2.6,8), neonMat('#ff6a1e',2.5));
+  flame.position.y=1.8; chill.add(flame); chill.userData.flame = flame;
+  const tentM = new THREE.MeshStandardMaterial({map:texTent(), roughness:.9});
+  for (const [tx,tz] of [[-15,-8],[-13,9],[14,-10]]){
+    const tent = new THREE.Mesh(new THREE.ConeGeometry(4,4.4,6), tentM);
+    tent.position.set(tx,2.2,tz); tent.castShadow=true; chill.add(tent);
+  }
+  for (const px of [[-14,0],[14,0]]){
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(.14,.14,6.5,6), fenceMat);
+    pole.position.set(px[0],3.25,px[1]); chill.add(pole);
+  }
+  stringLights([-14,6.2,0],[14,6.2,0],'#ff7300',chill,20);
+  const fire = new THREE.PointLight(0xff6a1e, 6, 36, 1.7); fire.position.y=2; chill.add(fire);
   chill.userData.fire = fire; worldGroup.add(chill); worldGroup.userData.chill = chill;
 
-  // ── Подземный уровень: люк + туннель-намёк + мини-лаб ──
-  const under = new THREE.Group(); under.position.set(170,0,-170);
-  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(4,4,.5,16), neonMat('#888',.5));
+  // ── ПОДЗЕМКА: контейнеры, люк, зелёное свечение лаборатории ──
+  const uzc = ZC['ПОДЗЕМНЫЙ УРОВЕНЬ'];
+  const under = new THREE.Group(); under.position.set(uzc.x,0,uzc.z);
+  const contM = new THREE.MeshStandardMaterial({map:texMetal(), color:0x8899aa, roughness:.7});
+  for (const [cx,cy,cz,ry] of [[-8,1.5,-4,.2],[6,1.5,3,-.5],[6,4.5,3,-.5],[-2,1.5,8,1.1]]){
+    const cont = new THREE.Mesh(new THREE.BoxGeometry(10,3,4), contM);
+    cont.position.set(cx,cy,cz); cont.rotation.y=ry; cont.castShadow=true; under.add(cont);
+  }
+  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(3.4,3.4,.5,16), neonMat('#39ff6a',.6));
   hatch.position.y=.25; under.add(hatch);
-  const labGlow = new THREE.PointLight(0x39ff6a, 3, 25, 2); labGlow.position.y=1; under.add(labGlow);
+  const labGlow = new THREE.PointLight(0x39ff6a, 3.5, 26, 1.9); labGlow.position.y=1.2; under.add(labGlow);
   worldGroup.add(under);
 
-  // ── Медпункт: белая палатка с крестом ──
-  const med = new THREE.Group(); med.position.set(40,0,90);
-  const tent = new THREE.Mesh(new THREE.ConeGeometry(9,8,4),
-    new THREE.MeshStandardMaterial({color:0xd8d8e8, emissive:0x334, emissiveIntensity:.4}));
-  tent.position.y=4; tent.rotation.y=Math.PI/4; med.add(tent);
-  const cross = new THREE.Mesh(new THREE.PlaneGeometry(3,3), neonMat('#ff4444',2));
-  cross.position.set(0,4,6.5); med.add(cross);
+  // ── МЕДПУНКТ: белая палатка, крест, тёплый свет ──
+  const mzc = ZC['МЕДПУНКТ'];
+  const med = new THREE.Group(); med.position.set(mzc.x,0,mzc.z);
+  const tent = new THREE.Mesh(new THREE.ConeGeometry(8,7,4),
+    new THREE.MeshStandardMaterial({color:0xd8d8e8, emissive:0x445, emissiveIntensity:.5, roughness:.9}));
+  tent.position.y=3.5; tent.rotation.y=Math.PI/4; tent.castShadow=true; med.add(tent);
+  const cross = new THREE.Mesh(new THREE.PlaneGeometry(2.6,2.6), neonMat('#ff4444',2));
+  cross.position.set(0,3.6,5.9); med.add(cross);
+  const medL = new THREE.PointLight(0xfff0dd, 2.5, 26, 1.8); medL.position.y=5; med.add(medL);
   worldGroup.add(med);
 
-  // ── Толпа: инстансированные рейверы с процедурным танцем ──
-  const CROWD_N = 360;
+  // ── Неоновые вывески-указатели над каждой зоной (видны сквозь всё) ──
+  for (const z of ZONES){
+    if (z.name==='ВХОД') continue;
+    const sign = makeSign(z.name, z.c);
+    sign.position.set(z.x, 17, z.z);
+    sign.scale.set(Math.min(30, 6+z.name.length*1.7), 2.8, 1);
+    worldGroup.add(sign);
+  }
+
+  // ── Толпа: инстансированные тела + головы, процедурный танец ──
+  const CROWD_N = 380;
   const capsule = new THREE.CapsuleGeometry(.38,1.1,3,8);
   const crowdMat = new THREE.MeshStandardMaterial({roughness:.7});
   crowd = new THREE.InstancedMesh(capsule, crowdMat, CROWD_N);
   crowd.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   crowd.userData.agents = [];
+  crowdHeads = new THREE.InstancedMesh(new THREE.SphereGeometry(.27,10,8),
+    new THREE.MeshStandardMaterial({color:0xd9a884, roughness:.6}), CROWD_N);
+  crowdHeads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   const dummy = new THREE.Object3D();
   for (let i=0;i<CROWD_N;i++){
-    // распределяем по танцевальным зонам
     const z = Math.random()<.7 ? ZONES[0] : ZONES[1];
     const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*z.r*.85;
     const agent = {x:z.x+Math.cos(a)*r, z:z.z+Math.sin(a)*r,
       phase:Math.random()*Math.PI*2, speed:.8+Math.random()*.8, hug:0};
     crowd.userData.agents.push(agent);
     dummy.position.set(agent.x, 1.1, agent.z); dummy.updateMatrix();
-    crowd.setMatrixAt(i, dummy.matrix);
+    crowd.setMatrixAt(i, dummy.matrix); crowdHeads.setMatrixAt(i, dummy.matrix);
     crowd.setColorAt(i, new THREE.Color().setHSL(Math.random(), .8, .5));
   }
-  worldGroup.add(crowd);
+  worldGroup.add(crowd); worldGroup.add(crowdHeads);
 
-  // ── Частицы дыма (инстансированные спрайт-плоскости не нужны — поинты) ──
+  // ── Дым над танцполом ──
   const smokeGeo = new THREE.BufferGeometry();
   const N=500, pos = new Float32Array(N*3);
-  for (let i=0;i<N;i++){ pos[i*3]=(Math.random()-.5)*140; pos[i*3+1]=Math.random()*14; pos[i*3+2]=-40+(Math.random()-.5)*120; }
+  for (let i=0;i<N;i++){ pos[i*3]=dzc.x+(Math.random()-.5)*110; pos[i*3+1]=Math.random()*13; pos[i*3+2]=dzc.z+(Math.random()-.5)*100; }
   smokeGeo.setAttribute('position', new THREE.BufferAttribute(pos,3));
-  const smoke = new THREE.Points(smokeGeo, new THREE.PointsMaterial({color:0x8866aa, size:2.4, transparent:true, opacity:.15, depthWrite:false}));
+  const smoke = new THREE.Points(smokeGeo, new THREE.PointsMaterial({color:0x8866aa, size:2.6, transparent:true, opacity:.15, depthWrite:false}));
   worldGroup.add(smoke); smokes.push(smoke);
+
+  // ── Вейпоинт-маяк (столб света, ставится кликом по карте) ──
+  waypointBeacon = new THREE.Mesh(new THREE.CylinderGeometry(1.2,1.8,70,10,1,true),
+    new THREE.MeshBasicMaterial({color:0x19f0ff, transparent:true, opacity:.28, side:THREE.DoubleSide, depthWrite:false}));
+  waypointBeacon.position.y=35; waypointBeacon.visible=false; worldGroup.add(waypointBeacon);
 }
 
 /* ═══ [S6] NPC: дилеры, рейверы, маскот, события ═════════════════════════ */
@@ -759,7 +1065,7 @@ function makeHuman(color, hairColor){
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CapsuleGeometry(.42,1.1,3,10),
     new THREE.MeshStandardMaterial({color}));
-  body.position.y = 1.15; g.add(body);
+  body.position.y = 1.15; body.castShadow = true; g.add(body);
   const head = new THREE.Mesh(new THREE.SphereGeometry(.3,12,10),
     new THREE.MeshStandardMaterial({color:0xd9a884}));
   head.position.y = 2.1; g.add(head);
@@ -803,20 +1109,20 @@ function addNPC(def){
 }
 function spawnNPCs(){
   // Дилеры по зонам
-  addNPC({x:6, z:-18, name:'Мяу-дилер 🐱', dealer:true, mascot:true, color:0xffc0e0,
+  addNPC({x:4, z:-12, name:'Мяу-дилер 🐱', dealer:true, mascot:true, color:0xffc0e0,
     stock:['meph','mdma','beer'], tutorial:true, priceMul:1});
-  addNPC({x:-148, z:-100, name:'Технарь', dealer:true, color:0x552266,
+  addNPC({x:-94, z:-62, name:'Технарь', dealer:true, color:0x552266,
     stock:['coke','meph','ket','lsd'], priceMul:.9, repNeed:0});
-  addNPC({x:145, z:-92, name:'VIP-Химик', dealer:true, color:0xccaa22,
+  addNPC({x:95, z:-58, name:'VIP-Химик', dealer:true, color:0xccaa22,
     stock:['coke','mdma','lsd','antidote'], priceMul:1.4, repNeed:20, pure:true});
-  addNPC({x:172, z:-168, name:'Лаборант', dealer:true, color:0x336633,
+  addNPC({x:110, z:-106, name:'Лаборант', dealer:true, color:0x336633,
     stock:['her','ket','meph','antidote'], priceMul:.8, repNeed:35, secret:true});
-  addNPC({x:-78, z:46, name:'Тип из кабинки', dealer:true, color:0x445566,
+  addNPC({x:-54, z:32, name:'Тип из кабинки', dealer:true, color:0x445566,
     stock:['meph','coke'], priceMul:1.1});
-  addNPC({x:92, z:37, name:'Бармен', dealer:true, color:0x228855,
+  addNPC({x:61, z:26, name:'Бармен', dealer:true, color:0x228855,
     stock:['beer','vodka','cocktail','water'], priceMul:1, legalOnly:true});
-  addNPC({x:42, z:87, name:'Медик', medic:true, color:0xeeeeee});
-  addNPC({x:168, z:-160, name:'Передозный тролль', troll:true, color:0x113311});
+  addNPC({x:31, z:58, name:'Медик', medic:true, color:0xeeeeee});
+  addNPC({x:106, z:-100, name:'Передозный тролль', troll:true, color:0x113311});
   // Патруль «в штатском»: ходят по открытым зонам, при палеве ≥70 — погоня
   const patrolZones = ZONES.filter(z=>!z.safe);
   for (let i=0;i<3;i++){
@@ -905,7 +1211,7 @@ function updateEvents(dt){
 }
 
 /* ═══ [S7] ИГРОК: контроллер + мини-игры употребления ════════════════════ */
-player = { pos:new THREE.Vector3(0,0,125), vel:new THREE.Vector3(), yaw:0, pitch:0,
+player = { pos:new THREE.Vector3(0,0,95), vel:new THREE.Vector3(), yaw:0, pitch:0,
   onGround:true, speed:0 };
 const keys = {};
 let useGame = null; // активная мини-игра приёма
@@ -936,8 +1242,8 @@ function updatePlayer(dt){
   player.vel.y -= 22*dt;
   player.pos.addScaledVector(player.vel, dt);
   if (player.pos.y<=0){ player.pos.y=0; player.vel.y=0; player.onGround=true; }
-  player.pos.x = THREE.MathUtils.clamp(player.pos.x,-290,290);
-  player.pos.z = THREE.MathUtils.clamp(player.pos.z,-290,290);
+  player.pos.x = THREE.MathUtils.clamp(player.pos.x,-210,210);
+  player.pos.z = THREE.MathUtils.clamp(player.pos.z,-210,210);
   player.speed = Math.hypot(player.vel.x, player.vel.z);
 
   playerMesh.position.copy(player.pos);
@@ -1066,11 +1372,30 @@ function updateSceneFX(dt, t){
   // дыхание геометрии мира под психоделиками
   const br = 1 + Math.sin(t*.9)*S.lvl.psy*.025*S.settings.trip;
   worldGroup.scale.set(br,1,br);
-  // костёр
-  const fire = worldGroup.userData.chill.userData.fire;
-  fire.intensity = 5 + Math.sin(t*11)*2;
+  // костёр: свет + пламя пляшут
+  const chillG = worldGroup.userData.chill;
+  chillG.userData.fire.intensity = 5 + Math.sin(t*11)*2;
+  const fl = chillG.userData.flame;
+  fl.scale.set(1+Math.sin(t*13)*.15, 1+Math.sin(t*9)*.25, 1+Math.cos(t*11)*.15);
   // бассейн VIP
   pool.material.emissiveIntensity = 1.4 + Math.sin(t*2)*.6 + S.empathy;
+  // плитка танцпола пульсирует в такт биту
+  worldGroup.userData.floorMat.emissiveIntensity = .28 + beatPulseT*1.1 + S.lvl.stim*.3 + S.empathy*.4;
+  // гирлянды мерцают
+  for (let i=0;i<worldGroup.userData.bulbs.length;i++)
+    worldGroup.userData.bulbs[i].emissiveIntensity = 1.6 + Math.sin(t*3+i*1.7)*.8 + beatPulseT*1.2;
+  // неон туалетов подмигивает (сломанная трубка)
+  worldGroup.userData.wc.userData.tube.material.emissiveIntensity =
+    Math.random()<.03 ? .3 : 2.4;
+  // диджей качает головой
+  const dj = worldGroup.userData.stage.userData.dj;
+  dj.position.y = 7 + Math.abs(Math.sin(t*4.4))*.25;
+  dj.rotation.z = Math.sin(t*2.2)*.12;
+  // звёзды медленно плывут (под психоделиками — быстрее)
+  stars.rotation.y += dt*(.004 + S.lvl.psy*.05);
+  // маяк вейпоинта дышит
+  if (waypointBeacon.visible)
+    waypointBeacon.material.opacity = .22 + Math.sin(t*4)*.1;
   // дым дрейфует
   for (const sm of smokes){ sm.rotation.y += dt*.02; sm.material.opacity = .12 + S.lvl.psy*.1; }
   beatPulseT = Math.max(0, beatPulseT - dt*6);
@@ -1085,8 +1410,11 @@ function updateSceneFX(dt, t){
     const hugScale = 1 + S.empathy*.08*Math.sin(t*3+a.phase);
     dummy.scale.setScalar(hugScale);
     dummy.updateMatrix(); crowd.setMatrixAt(i, dummy.matrix);
+    dummy.position.y = 2.12 + bob; dummy.scale.setScalar(1);
+    dummy.updateMatrix(); crowdHeads.setMatrixAt(i, dummy.matrix);
   }
   crowd.instanceMatrix.needsUpdate = true;
+  crowdHeads.instanceMatrix.needsUpdate = true;
 }
 
 /* ═══ [S9] ИГРОВОЙ ЦИКЛ: ритм, экономика, передоз, сейвы ════════════════ */
@@ -1135,7 +1463,7 @@ function updateOverdose(dt){
     S.tox = .3; S.doses = []; S.lvl = {alco:0,stim:0,psy:0,opi:0}; S.empathy=0;
     S.vibe = 5; S.money = Math.max(0, S.money - 500);
     S.gameMin += 60; // потерян час ночи
-    player.pos.set(40,0,90); // очнулся в медпункте
+    player.pos.set(30,0,60); // очнулся в медпункте
     toast('🚑 Очнулся в медпункте. Минус час ночи и 500₽.');
   }
 }
@@ -1144,10 +1472,10 @@ function callMedic(){
     od.active=false; el('odPanel').classList.remove('on');
     S.tox = .35; S.doses=[]; S.lvl={alco:0,stim:0,psy:0,opi:0}; S.empathy=0;
     S.gameMin += 30; S.money = Math.max(0,S.money-300);
-    player.pos.set(40,0,90);
+    player.pos.set(30,0,60);
     toast('🚑 Медики откачали. -300₽, -полчаса. Живой.');
   } else if (S.tox>.6){
-    S.tox=.3; S.money=Math.max(0,S.money-300); player.pos.set(40,0,90);
+    S.tox=.3; S.money=Math.max(0,S.money-300); player.pos.set(30,0,60);
     toast('🚑 Прокапали в safe tent. -300₽');
   } else toast('Медик: «Ты в порядке. Пей воду.»');
 }
@@ -1399,6 +1727,59 @@ function updatePhone(){
     ? `Пей воду каждые 30 мин.<br>Меф: пик прошёл — пауза минимум ${(SUB.meph.dur*.8)|0}м.<br>Не мешай стимы с алкоголем.<br>Плохо → H, медики не сдают.<br><b>Патруль (🕶):</b> употребление/сделки в открытых зонах поднимают ПАЛЕВО. ≥70 — за тобой идут. Пунктирные зоны на карте (туалеты, бункер, VIP, чилл, подземка) — там тихо и палево спадает.`
     : 'HR-режим выключен.';
 }
+/* ── Навигация: вейпоинт (клик по карте), стрелка-компас, миникарта ── */
+let waypoint = null;
+function setWaypoint(x, z){
+  waypoint = {x, z};
+  waypointBeacon.position.set(x, 35, z); waypointBeacon.visible = true;
+  el('wpArrow').style.display = 'block';
+  toast('📍 Маршрут установлен — иди на голубой луч');
+}
+function clearWaypoint(silent){
+  waypoint = null; waypointBeacon.visible = false;
+  el('wpArrow').style.display = 'none';
+  if (!silent) toast('📍 Ты на месте');
+}
+function updateNav(){
+  if (!waypoint) return;
+  const dx = waypoint.x - player.pos.x, dz = waypoint.z - player.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 7){ clearWaypoint(); return; }
+  // угол цели относительно взгляда: 0 = прямо, вправо = по часовой
+  const rel = Math.atan2(dx, dz) - player.yaw - Math.PI;
+  el('wpArrow').querySelector('.arr').style.transform = `rotate(${(-rel).toFixed(3)}rad)`;
+  el('wpArrow').querySelector('.d').textContent = (d|0) + ' м';
+}
+function updateMinimap(){
+  const c = el('minimap'), g = c.getContext('2d');
+  const W = c.width, B = WORLD_B;
+  const mx = v => (v+B)/(2*B)*W, mz = v => (v+B)/(2*B)*W;
+  g.clearRect(0,0,W,W);
+  for (const z of ZONES){
+    const r = z.r/(2*B)*W;
+    g.beginPath(); g.arc(mx(z.x), mz(z.z), r, 0, 7);
+    g.fillStyle = z.c + '22'; g.fill();
+    g.setLineDash(z.safe ? [3,2] : []);
+    g.strokeStyle = z.c; g.lineWidth = 1; g.stroke(); g.setLineDash([]);
+  }
+  for (const n of npcs){
+    const x = mx(n.mesh.position.x), y = mz(n.mesh.position.z);
+    if (n.dealer){ g.fillStyle='#ff2e88'; g.fillRect(x-2,y-2,4,4); }
+    else if (n.medic){ g.fillStyle='#fff'; g.fillRect(x-1.5,y-1.5,3,3); }
+    else if (n.guard){ g.fillStyle='#4aa3ff'; g.beginPath(); g.arc(x,y,2.6,0,7); g.fill(); }
+  }
+  if (waypoint){
+    g.strokeStyle='#19f0ff'; g.lineWidth=1.6;
+    const x = mx(waypoint.x), y = mz(waypoint.z);
+    g.beginPath(); g.moveTo(x-4,y-4); g.lineTo(x+4,y+4); g.moveTo(x+4,y-4); g.lineTo(x-4,y+4); g.stroke();
+  }
+  // игрок: стрелка по направлению взгляда
+  g.save(); g.translate(mx(player.pos.x), mz(player.pos.z)); g.rotate(-player.yaw);
+  g.fillStyle='#fff'; g.beginPath();
+  g.moveTo(0,-6); g.lineTo(4,5); g.lineTo(-4,5); g.closePath(); g.fill();
+  g.restore();
+}
+
 // Инвентарь (I): все вещества, клик кладёт предмет в выбранный слот хотбара
 function renderInv(){
   const grid = el('invGrid'); grid.innerHTML='';
@@ -1420,14 +1801,16 @@ function renderInv(){
 function drawMap(){
   const c = el('mapCanvas'), ctx2 = c.getContext('2d');
   ctx2.fillStyle = '#02020a'; ctx2.fillRect(0,0,512,512);
-  const sx = v => (v+300)/600*512, sz = v => (v+300)/600*512;
+  const B = WORLD_B; const sx = v => (v+B)/(2*B)*512, sz = v => (v+B)/(2*B)*512;
   for (const z of ZONES){
-    ctx2.beginPath(); ctx2.arc(sx(z.x), sz(z.z), z.r/600*512, 0, 7);
+    ctx2.beginPath(); ctx2.arc(sx(z.x), sz(z.z), z.r/(2*WORLD_B)*512, 0, 7);
     ctx2.strokeStyle = z.c;
     ctx2.setLineDash(z.safe ? [4,3] : []); // пунктир = safe-зона
     ctx2.stroke(); ctx2.setLineDash([]);
-    ctx2.fillStyle = z.c; ctx2.font='10px sans-serif'; ctx2.textAlign='center';
-    ctx2.fillText(z.name, sx(z.x), sz(z.z));
+    ctx2.font='bold 13px sans-serif'; ctx2.textAlign='center';
+    ctx2.lineWidth=3; ctx2.strokeStyle='#000';
+    ctx2.strokeText(z.name, sx(z.x), sz(z.z));
+    ctx2.fillStyle = z.c; ctx2.fillText(z.name, sx(z.x), sz(z.z));
   }
   // дилеры (розовые ромбы), медик (белый крест), патруль (синие точки)
   for (const n of npcs){
@@ -1436,8 +1819,14 @@ function drawMap(){
     else if (n.medic){ ctx2.fillStyle='#fff'; ctx2.fillText('+', x, y+3); }
     else if (n.guard){ ctx2.fillStyle='#4aa3ff'; ctx2.beginPath(); ctx2.arc(x,y,4,0,7); ctx2.fill(); }
   }
-  ctx2.fillStyle='#889'; ctx2.textAlign='left'; ctx2.font='9px sans-serif';
-  ctx2.fillText('■ дилер   ● патруль   пунктир — safe-зоны', 8, 504);
+  if (waypoint){
+    ctx2.strokeStyle='#19f0ff'; ctx2.lineWidth=2.5;
+    const x = sx(waypoint.x), y = sz(waypoint.z);
+    ctx2.beginPath(); ctx2.moveTo(x-7,y-7); ctx2.lineTo(x+7,y+7);
+    ctx2.moveTo(x+7,y-7); ctx2.lineTo(x-7,y+7); ctx2.stroke();
+  }
+  ctx2.fillStyle='#889'; ctx2.textAlign='left'; ctx2.font='10px sans-serif';
+  ctx2.fillText('■ дилер   ● патруль   пунктир — safe-зоны   ✕ маршрут   КЛИК ПО КАРТЕ = ПОСТАВИТЬ МАРШРУТ', 8, 504);
   ctx2.textAlign='center'; ctx2.font='10px sans-serif';
   ctx2.fillStyle = '#fff'; ctx2.beginPath();
   ctx2.arc(sx(player.pos.x), sz(player.pos.z), 5, 0, 7); ctx2.fill();
@@ -1518,6 +1907,15 @@ if ('ontouchstart' in window){
   bind(el('joyR'), (x,y)=>{ player.yaw -= x*.06; player.pitch = THREE.MathUtils.clamp(player.pitch - y*.04,-1.4,1.4); });
 }
 
+// Клик по большой карте — поставить вейпоинт (маршрут)
+el('mapCanvas').addEventListener('click', e=>{
+  const r = e.target.getBoundingClientRect();
+  const wx = (e.clientX-r.left)/r.width  * 2*WORLD_B - WORLD_B;
+  const wz = (e.clientY-r.top)/r.height * 2*WORLD_B - WORLD_B;
+  setWaypoint(wx, wz);
+  drawMap();
+});
+
 // Настройки паузы
 el('setStrobe').onchange = e=>{ S.settings.strobe = e.target.checked; saveGame(); };
 el('setTrip').oninput = e=>{ S.settings.trip = e.target.value/100; saveGame(); };
@@ -1535,6 +1933,10 @@ async function boot(fromSave){
     renderer = new THREE.WebGPURenderer({canvas: el('game-canvas'), antialias:true});
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; // киношный контраст неона
+    renderer.toneMappingExposure = 1.3;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     await renderer.init();
   }catch(err){
     el('errbox').style.display='flex';
@@ -1596,6 +1998,8 @@ function loop(){
   updateOverdose(dt);
   updateVisualFX();
   updateHUD();
+  updateNav();
+  updateMinimap();
   audio.update();
   audio.heartbeat(Math.min(1, S.lvl.stim*.7 + S.tox*.8));
   mouse.dx = mouse.dy = 0;
