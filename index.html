@@ -445,6 +445,7 @@ const S = {
   dirtyBatch:null, dirtyBatchT:0, // активная «грязная партия» ночи (канал)
   shiftBlind:0, // до какой игровой минуты патруль слеп (пересменка)
   romance:0,    // прогресс линии Пси-феи (0..3)
+  headliner:false, headlinerFired:false, // хедлайнер-час (02:00)
   slot:0, gameMin:0, // минут с 23:00
   heat:0, hotbar:[...HOTBAR_DEFAULT], // «палево» и настраиваемый хотбар
   contacts:['🐱 Мяу-дилер (главный танцпол)'],
@@ -705,6 +706,51 @@ function triggerShiftChange(){
   toast('🕶💤 Патруль меняется у бара — сейчас они слепые. Успей провернуть дела!');
 }
 
+/* ── ХЕДЛАЙНЕР (02:00): толпа стягивается к сцене, музыка жёстче, супер-вайб ── */
+function updateTimedEvents(){
+  // 02:00 = 180 игровых минут от 23:00
+  if (!S.headlinerFired && S.gameMin >= 180){
+    S.headlinerFired = true; S.headliner = true; S.headlinerEnd = S.gameMin + 60;
+    toast('🎧🔥 02:00 — ХЕДЛАЙНЕР KOTA ВЫШЕЛ НА ГЛАВНУЮ СЦЕНУ! Толпа стягивается, бит валит. Держи карманы — карманники тоже тут.');
+    // все дилеры/рейверы тянутся к сцене; карманники активизируются
+    npcs.filter(n=>n.junkie).forEach(j=>{ j.cool = 0; });
+  }
+  if (S.headliner && S.gameMin >= S.headlinerEnd){
+    S.headliner = false;
+    toast('🎧 Пик сета прошёл — толпа выдыхает и растекается по фесту.');
+  }
+}
+
+/* ── БЛЭКАУТ: свет вырубается на ~15 сек, патруль слепнет, воры лютуют ── */
+const blackout = {active:false, t:0};
+function startBlackout(){
+  if (blackout.active) return;
+  blackout.active = true; blackout.t = 15;
+  toast('🌑 СВЕТ ВЫРУБИЛСЯ! Полная темнота — патруль слеп, но и торчки осмелели...');
+  S.shiftBlind = S.gameMin + 8; // патруль тоже слеп
+}
+function updateBlackout(dt){
+  if (!blackout.active) return;
+  blackout.t -= dt;
+  el('fx-vignette').style.opacity = Math.max(+getComputedStyle(el('fx-vignette')).opacity||0, .85);
+  if (blackout.t <= 0){ blackout.active = false; toast('💡 Свет вернулся! Толпа взревела.'); }
+}
+
+/* ── БАССЕЙН VIP: прыжок сбивает токсичность и бэд-трип, даёт вайб ── */
+let poolCd = 0;
+function tryPoolJump(){
+  const vip = ZONES.find(z=>z.name==='VIP-ЗОНА');
+  if (Math.hypot(player.pos.x-(vip.x+6), player.pos.z-(vip.z-5)) > 10) return false;
+  if (poolCd>0){ toast('💦 Уже мокрый, отдышись'); return true; }
+  poolCd = 10;
+  S.tox = Math.max(0, S.tox-.35); S.badtrip = Math.max(0, S.badtrip-.5);
+  S.vibe = Math.min(100, S.vibe+12); S.lvl.alco *= .6;
+  el('fx-flash').style.opacity = .4; setTimeout(()=>el('fx-flash').style.opacity=0, 150);
+  toast('🏊 Ныр в светящийся бассейн! Токсичность сбита, голова прояснилась, +вайб');
+  audio.punch();
+  return true;
+}
+
 // БЭД-ТРИП: отдельный режим ужаса. Гаснет со временем и от даунеров/чилла/воды.
 function startBadTrip(){
   if (S.badtrip > .5) return; // уже плохо
@@ -841,7 +887,7 @@ const audio = (()=>{
       // опиаты глушат верха и замедляют, алкоголь мажет
       filt.frequency.value = 18000 - S.lvl.opi*15000 - S.lvl.alco*6000;
       delayGain.gain.value = Math.min(.5, S.empathy*.4 + S.lvl.psy*.35); // эхо на «вокале»
-      bpm = 132 * (1 - S.lvl.opi*.3) * (1 + S.lvl.stim*.06);
+      bpm = 132 * (1 - S.lvl.opi*.3) * (1 + S.lvl.stim*.06) * (S.headliner?1.09:1);
     },
     setVol(v){ if(master) master.gain.value = v; }
   };
@@ -1647,8 +1693,10 @@ function updateEvents(dt){
     S.tripReports.push('Дилер-призрак в зеркале');
   } else if (roll<.72 && S.gameMin>60 && !raid.active){
     startRaid(); // облава
-  } else if (roll<.82 && !S.shiftBlind){
+  } else if (roll<.78 && !S.shiftBlind){
     triggerShiftChange(); // слепое окно пересменки
+  } else if (roll<.84 && !blackout.active){
+    startBlackout(); // вырубился свет
   } else if (roll<.9){
     // буйный торчок врывается на танцпол
     const j = npcs.find(n=>n.junkie);
@@ -1895,9 +1943,14 @@ function updateSceneFX(dt, t){
   // толпа танцует (инстансы) — bob в такт, обнимашки при эмпатии
   const dummy = new THREE.Object3D();
   const agents = crowd.userData.agents;
+  const dzc = ZONES[0]; // во время хедлайнера толпа стягивается к главной сцене
   for (let i=0;i<agents.length;i++){
     const a = agents[i];
-    const bob = Math.abs(Math.sin(t*a.speed*4 + a.phase))*.4 + beatPulseT*.2;
+    if (S.headliner){ // миграция к танцполу
+      a.x += (dzc.x + (a.hx||(a.hx=rnd(-1,1)*dzc.r*.75)) - a.x) * dt*.4;
+      a.z += (dzc.z + (a.hz||(a.hz=rnd(-1,1)*dzc.r*.75)) - a.z) * dt*.4;
+    }
+    const bob = Math.abs(Math.sin(t*a.speed*4 + a.phase))*(.4+(S.headliner?.3:0)) + beatPulseT*.2;
     dummy.position.set(a.x, 1.1 + bob, a.z);
     dummy.rotation.y = Math.sin(t*a.speed + a.phase)*.6;
     const hugScale = 1 + S.empathy*.08*Math.sin(t*3+a.phase);
@@ -2037,7 +2090,12 @@ function interact(){
       n.helped = true; S.rep += 5; statMoney(200);
       toast(`🤝 Помог зависшему (${n.name}): +5 REP, +200₽`);
       befriend(n); // спас — стал другом
-    } else if (n.friend){
+      return;
+    }
+    // если у тебя есть нелегальный стафф — можно толкнуть дозу (барыжничество)
+    const sellable = Object.keys(S.inv).filter(id=>isIllegal(id) && S.inv[id]>0);
+    if (sellable.length && !n.friend){ openRaverDeal(n, sellable); return; }
+    if (n.friend){
       toast(`${n.icon2||'🫂'} ${n.name}: «Ты лучший, бро. Я с тобой до утра.»`);
       S.vibe = Math.min(100, S.vibe+4);
     } else if (S.empathy>.4){
@@ -2048,6 +2106,47 @@ function interact(){
       if (Math.random()<.5) befriend(n); // обнялись под мефом — подружились
     } else toast(`${n.name}: «Хорошей ночи, бро»`);
   }
+}
+
+/* ── БАРЫЖНИЧЕСТВО: толкни дозу рейверу. Наценка, но каждый акт — палево,
+   а иногда «покупатель» оказывается подсадным. ── */
+function openRaverDeal(n, sellable){
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = n.name;
+  dlg.querySelector('.txt').textContent = S.empathy>.4
+    ? '«Оу, бро... а есть чем поделиться? Заплачу!»'
+    : '«Псс... есть что продать? Ищу вещество.»';
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  for (const id of sellable){
+    const markup = Math.round(SUB[id].price * (1.4 + S.rep*.01)); // наценка растёт с REP
+    const b = document.createElement('button'); b.className='opt';
+    b.innerHTML = `💊 Толкнуть ${SUB[id].icon} ${SUB[id].name} <span class="price">+₽${markup}</span>`;
+    b.onclick = ()=>{
+      closeDialog();
+      // риск: подсадной покупатель (ниже при высоком REP)
+      if (Math.random() < Math.max(.05, .25 - S.rep*.006) && !currentZone()?.safe){
+        addHeat(55); toast('🕵️ Подсадной! «Работает полиция!» — резкий скачок палева');
+        return;
+      }
+      S.inv[id]--; statMoney(markup); S.rep += 1;
+      if (!currentZone()?.safe) addHeat(18);
+      // барыга привлекает торчков
+      if (Math.random()<.4) npcs.filter(j=>j.junkie).slice(0,1).forEach(j=>{ j.cool=0; j.mesh.position.set(player.pos.x+rnd(-6,6),0,player.pos.z+rnd(-6,6)); });
+      toast(`💰 Толкнул ${SUB[id].name} за ₽${markup}. ${currentZone()?.safe?'':'Палево +'}`);
+      S.tripReports.push('Барыжил на фесте');
+    };
+    opts.appendChild(b);
+  }
+  // ещё можно просто пообщаться/обняться
+  const t = document.createElement('button'); t.className='opt';
+  t.textContent = S.empathy>.4 ? '💗 Просто обняться' : '💬 Поболтать';
+  t.onclick = ()=>{ closeDialog();
+    if (S.empathy>.4){ S.stats.hugs++; S.vibe=Math.min(100,S.vibe+6); checkChallenges(); if(Math.random()<.5) befriend(n); toast('💗 Обнялись — тепло на душе'); }
+    else toast(`${n.name}: «Хорошей ночи, бро»`);
+  };
+  opts.appendChild(t);
+  const x = document.createElement('button'); x.className='opt'; x.textContent='Уйти';
+  x.onclick = closeDialog; opts.appendChild(x);
 }
 
 /* ── ТУСОВКА (крю): друзья ходят за тобой и дают бонусы ──
@@ -2561,6 +2660,7 @@ addEventListener('keydown', e=>{
   if (e.code==='KeyV'){ S.camMode = S.camMode===3?1:3; }
   if (e.code==='KeyH') callMedic();
   if (e.code==='Space' && inDanceZone()) tryRhythmHit();
+  else if (e.code==='Space') tryPoolJump(); // прыжок в бассейн VIP
   const num = parseInt(e.code.replace('Digit',''));
   if (num>=1 && num<=6){ S.slot = num-1; }
 });
@@ -2648,6 +2748,7 @@ if (TOUCH){
   press(el('tbJump'), ()=>{
     if (!S.started || S.paused) return;
     if (inDanceZone()) tryRhythmHit();
+    else if (tryPoolJump()){ /* нырнул в бассейн */ }
     else if (player.onGround){ player.vel.y = 7; player.onGround = false; }
   });
   for (const b of el('tbRow').querySelectorAll('button')){
@@ -2758,6 +2859,10 @@ window.__crewSize = ()=>crewSize();
 window.__psy = ()=>{ const p=npcs.find(n=>n.name==='Пси-фея'); if(p){p.mesh.position.set(player.pos.x+2,0,player.pos.z); openPsyFairy(p);} };
 window.__danceoff = ()=>{ const p=npcs.find(n=>n.raver); startDanceOff(p); return danceOff && {target:danceOff.target}; };
 window.__doState = ()=>danceOff && {hits:danceOff.hits, t:+danceOff.t.toFixed(1)};
+window.__headliner = ()=>{ S.gameMin = 180; updateTimedEvents(); return S.headliner; };
+window.__blackout = ()=>startBlackout();
+window.__pool = ()=>{ const v=ZONES.find(z=>z.name==='VIP-ЗОНА'); player.pos.set(v.x+6,0,v.z-5); return tryPoolJump(); };
+window.__deal = ()=>{ const r=npcs.find(n=>n.raver&&!n.friend); const sell=Object.keys(S.inv).filter(id=>isIllegal(id)&&S.inv[id]>0); openRaverDeal(r, sell); return [...document.querySelectorAll('#dialog .opt')].map(b=>b.textContent); };
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -2780,6 +2885,9 @@ function loop(){
     updateRaid(dt);
     updateDitch(dt);
     updateDanceOff(dt);
+    updateTimedEvents();
+    updateBlackout(dt);
+    if (poolCd>0) poolCd -= dt;
     updatePlayer(dt*timeMul);
     updateNPCs(dt*timeMul);
     updateSocial(dt);
