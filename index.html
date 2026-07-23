@@ -444,6 +444,7 @@ const S = {
   badtrip:0, tested:{}, // уровень бэд-трипа (0..1) и проверенная чистота стаффа
   dirtyBatch:null, dirtyBatchT:0, // активная «грязная партия» ночи (канал)
   shiftBlind:0, // до какой игровой минуты патруль слеп (пересменка)
+  romance:0,    // прогресс линии Пси-феи (0..3)
   slot:0, gameMin:0, // минут с 23:00
   heat:0, hotbar:[...HOTBAR_DEFAULT], // «палево» и настраиваемый хотбар
   contacts:['🐱 Мяу-дилер (главный танцпол)'],
@@ -1478,6 +1479,12 @@ function updateNPCs(dt){
       }
       const d = playerDistTo(n);
       const loot = S.money>=100 || Object.keys(S.inv).some(id=>isIllegal(id)&&S.inv[id]>0);
+      // друг рядом отпугивает торчка
+      if (!n.calmed && n.cool<=0 && d<15 && loot && !anyPanelOpen() && crewNear(12)){
+        if (!n.scared){ n.scared=true; toast('🫂 Твой друг шуганул торчка — «иди отсюда!»'); }
+        n.task = {type:'flee', t:3}; continue;
+      }
+      n.scared = false;
       if (!n.calmed && n.cool<=0 && d<15 && loot && !anyPanelOpen()){
         if (!n.hunting && d<14){ n.hunting=true; toast('🧟 «Брат... брат, поделись... БРАТ!» — к тебе ломится дикий торчок'); }
         stepToward(m, player.pos.x, player.pos.z, 6.8, dt);
@@ -1508,6 +1515,23 @@ function updateNPCs(dt){
         T.t -= dt; stepToward(m, T.x, T.z, 6, dt);
         if (T.t<=0) n.task = null;
       } else n.task = null;
+      continue;
+    }
+    // ── Друг из тусовки: ходит за тобой, кроме как на «яме» мефа ──
+    if (n.raver && n.friend){
+      // на спаде мефа (высокая тяга) друзья временно «исчезают»
+      const shouldGo = S.crave > .6;
+      if (shouldGo && !n.gone){ n.gone = true; n.marker && (n.marker.visible=false);
+        if (playerDistTo(n)<30) toast(`🫥 ${n.name} растворился в толпе — на спаде все куда-то делись...`); }
+      if (!shouldGo && n.gone){ n.gone = false; n.marker && (n.marker.visible=true);
+        if (playerDistTo(n)<30) toast(`🫂 ${n.name} снова рядом.`); }
+      if (n.gone){ // отходит в толпу
+        m.position.x += Math.sin(n.cycle)*dt*1.5; m.position.z += Math.cos(n.cycle)*dt*1.5;
+      } else {
+        const d = playerDistTo(n);
+        if (d>5){ stepToward(m, player.pos.x - Math.sin(player.yaw)*3, player.pos.z - Math.cos(player.yaw)*3, Math.min(9, 3+d*.3), dt); }
+        m.position.y = inDanceZone() ? Math.abs(Math.sin(n.cycle*5))*.2 : 0; // танцует рядом
+      }
       continue;
     }
     if (n.raver){
@@ -1896,33 +1920,65 @@ function tryRhythmHit(){
   const sinceBeat = now - lastBeatWallT;
   const beatLen = 60000/132/1; // четверти
   const off = Math.min(sinceBeat % (beatLen), beatLen - sinceBeat % beatLen);
-  if (off < window_){
+  const good = off < window_;
+  if (good){
     S.combo++;
+    if (danceOff) danceOff.hits++;              // очко в дэнс-батле
     if (S.combo>S.stats.maxCombo){ S.stats.maxCombo = S.combo; checkChallenges(); }
     const gain = (1 + S.combo*.15) * (1 + S.empathy*.8);
     S.vibe = Math.min(100, S.vibe + gain);
-    if (S.combo%8===0) toast(`🔥 Комбо x${S.combo}! Толпа с тобой`);
-    if (S.empathy>.5 && S.combo%5===0){
+    if (!danceOff && S.combo%8===0) toast(`🔥 Комбо x${S.combo}! Толпа с тобой`);
+    if (!danceOff && S.empathy>.5 && S.combo%5===0){
       statMoney(50); S.stats.hugs++; checkChallenges();
       toast('💗 Обнимашки → кто-то сунул полтос «на воду»');
     }
-  } else { S.combo = 0; }
-  el('comboN').textContent = S.combo;
+  } else { S.combo = 0; if (danceOff) danceOff.misses++; }
+  el('comboN').textContent = danceOff ? danceOff.hits : S.combo;
   const p = el('rhythm').querySelector('.pulse');
-  p.style.transform = 'scale(1.25)'; p.style.boxShadow = '0 0 24px var(--neon-cyan)';
+  p.style.transform = 'scale(1.25)'; p.style.boxShadow = `0 0 24px ${good?'var(--neon-cyan)':'var(--danger)'}`;
   setTimeout(()=>{ p.style.transform='scale(1)'; p.style.boxShadow='none'; }, 90);
 }
 
+/* ── ДЭНС-БАТЛ: 10 сек, набей больше «попаданий» в бит, чем соперник ── */
+let danceOff = null;
+function startDanceOff(n){
+  if (!inDanceZone()){ toast('🕺 Дэнс-батл только на танцполе!'); return; }
+  if (S.money < 200){ toast('Нужно ₽200 на ставку'); return; }
+  statMoney(-200);
+  danceOff = {opp:n, hits:0, misses:0, t:10, target: 5+Math.floor(Math.random()*5)};
+  toast(`🕺🔥 ДЭНС-БАТЛ с «${n.name}»! 10 сек — жми SPACE/♪ в такт. Толпа собирается в круг!`);
+}
+function updateDanceOff(dt){
+  if (!danceOff) return;
+  danceOff.t -= dt;
+  if (danceOff.t <= 0){
+    const win = danceOff.hits >= danceOff.target;
+    if (win){
+      statMoney(600); S.rep += 6; S.vibe = Math.min(100, S.vibe+20);
+      toast(`🏆 Дэнс-батл ВЫИГРАН! ${danceOff.hits} vs ${danceOff.target}. +₽600, +6 REP, толпа ревёт!`);
+      if (danceOff.opp.name==='Пси-фея'){ S.romance = Math.min(3, S.romance+1); toast('🌸 Пси-фея впечатлена...'); }
+      S.tripReports.push('Победа в дэнс-батле');
+      befriend(danceOff.opp);
+    } else {
+      S.vibe = Math.max(0, S.vibe-8);
+      toast(`😳 Дэнс-батл проигран (${danceOff.hits} vs ${danceOff.target}). Ставка сгорела.`);
+    }
+    danceOff = null;
+  }
+}
+
 // Передоз
-const od = {active:false, mash:0};
+const od = {active:false, mash:0, friendHelp:false};
 function startOverdose(){
-  od.active = true; od.mash = 0;
+  od.active = true; od.mash = 0; od.friendHelp = false;
   el('odPanel').classList.add('on');
   document.exitPointerLock?.();
   saveGame();
 }
 function updateOverdose(dt){
   if (!od.active) return;
+  // друг рядом помогает: тащит к медику — прогресс капает сам
+  if (crewNear(16)){ od.mash += dt*10; if (!od.friendHelp){ od.friendHelp=true; toast('🫂 Друг подхватил тебя — «дыши, я держу!»'); } }
   od.mash -= dt*14; // утекает
   el('odMash').textContent = Math.max(0,od.mash|0) + '%';
   if (od.mash >= 100){ // спасся сам
@@ -1976,16 +2032,38 @@ function interact(){
   else if (n.junkie) openJunkie(n);
   else if (n.troll) openTroll(n);
   else if (n.raver){
+    if (n.name==='Пси-фея'){ openPsyFairy(n); return; } // романтическая линия
     if (n.stuck && !n.helped){
       n.helped = true; S.rep += 5; statMoney(200);
       toast(`🤝 Помог зависшему (${n.name}): +5 REP, +200₽`);
+      befriend(n); // спас — стал другом
+    } else if (n.friend){
+      toast(`${n.icon2||'🫂'} ${n.name}: «Ты лучший, бро. Я с тобой до утра.»`);
+      S.vibe = Math.min(100, S.vibe+4);
     } else if (S.empathy>.4){
-      S.rep += 2; S.vibe = Math.min(100,S.vibe+6);
+      S.rep += 2; S.vibe = Math.min(100,S.vibe+6); S.stats.hugs++; checkChallenges();
       const secrets = ['«Лаборант сидит под люком на юго-востоке»','«У VIP-Химика самое чистое, но нужен REP»','«Розовая дорожка существует. Бункер. Ищи.»'];
       toast('💗 '+secrets[Math.floor(Math.random()*secrets.length)]);
       if (!S.contacts.includes('🌸 Пси-фея')) S.contacts.push('🌸 Пси-фея');
+      if (Math.random()<.5) befriend(n); // обнялись под мефом — подружились
     } else toast(`${n.name}: «Хорошей ночи, бро»`);
   }
+}
+
+/* ── ТУСОВКА (крю): друзья ходят за тобой и дают бонусы ──
+   Друг появляется от спасения зависшего или обнимашек под мефом. На спаде
+   мефа (яма) друзья временно «исчезают» — как в реальной химии дружбы. */
+function befriend(n){
+  if (n.friend) return;
+  n.friend = true; n.icon2 = ['🫂','🤟','✨','🌈'][crewSize()%4];
+  if (n.marker){ n.marker.material.map = makeMarker('🫂').material.map; n.marker.material.needsUpdate = true; }
+  toast(`🫂 ${n.name} теперь в твоей тусовке! Друзья прикрывают от торчков и тащат к медику.`);
+  if (!S.contacts.includes('🫂 '+n.name)) S.contacts.push('🫂 '+n.name);
+}
+function crewSize(){ return npcs.filter(n=>n.friend).length; }
+function crewNear(dist=14){
+  return npcs.some(n=>n.friend && !n.gone &&
+    Math.hypot(n.mesh.position.x-player.pos.x, n.mesh.position.z-player.pos.z)<dist);
 }
 
 // Магазин дилера
@@ -2008,7 +2086,8 @@ function openShop(n){
   for (const id of n.stock){
     const s = SUB[id];
     if (S.settings.alcoOnly && s.ch!=='alco' && s.ch!=='aid') continue;
-    const price = Math.round(s.price * (n.priceMul||1) * (n.pure?1:1));
+    const crewDisc = Math.max(.7, 1 - crewSize()*.05); // тусовка = скидка до 30%
+    const price = Math.round(s.price * (n.priceMul||1) * crewDisc);
     const b = document.createElement('button'); b.className='opt';
     b.innerHTML = `${s.icon} ${s.name}${n.pure?' <small>(чистый)</small>':''}<span class="price">₽${n.freebie&&id==='meph'?0:price}</span>`;
     b.onclick = ()=>{
@@ -2051,6 +2130,46 @@ function checkCourier(){
   }
 }
 // Диалог с диким торчком: поделиться, откупиться, оттолкнуть
+// Романтическая линия Пси-феи: растёт по разговорам под кайфом → своя концовка
+function openPsyFairy(n){
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = '🌸 Пси-фея';
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  const lines = [
+    '«Оу, привет. Ты тоже чувствуешь, как бас проходит сквозь рёбра?»',
+    '«Ты снова здесь... Я весь вечер ищу тебя в этих огнях.»',
+    '«С тобой ночь другая. Теплее. Не отпускай мою руку, ладно?»',
+    '«Останься со мной до рассвета. Хочу встретить солнце — с тобой.»',
+  ];
+  dlg.querySelector('.txt').textContent = lines[Math.min(3,S.romance)];
+  const canFlirt = S.empathy>.3 || S.romance>0;
+  if (S.romance<3){
+    const b = document.createElement('button'); b.className='opt';
+    b.textContent = canFlirt ? '💞 «Ты как вспышка стробоскопа — не отвести глаз»' : '💬 Заговорить (нужен вайб/эмпатия)';
+    b.onclick = ()=>{
+      closeDialog();
+      if (!canFlirt){ toast('🌸 «Ты какой-то зажатый... расслабься сначала.»'); return; }
+      S.romance++; S.vibe=Math.min(100,S.vibe+8);
+      befriend(n);
+      if (S.romance>=3) toast('🌸💞 Между вами что-то настоящее. Найди её на рассвете.');
+      else toast(`🌸 Пси-фея улыбнулась (${S.romance}/3). Танцуй рядом, возвращайся.`);
+      S.tripReports.push('Флирт с Пси-феей');
+    };
+    opts.appendChild(b);
+  } else {
+    const b = document.createElement('button'); b.className='opt';
+    b.textContent = '💞 «Обещаю. До солнца — вместе.»';
+    b.onclick = ()=>{ closeDialog(); S.romanceSealed = true; S.vibe=Math.min(100,S.vibe+15); toast('🌸 Она сжала твою ладонь. Осталось дожить до рассвета.'); };
+    opts.appendChild(b);
+  }
+  const dbtn = document.createElement('button'); dbtn.className='opt';
+  dbtn.textContent = '🕺 Вызвать на дэнс-батл (₽200, нужен танцпол)';
+  dbtn.onclick = ()=>{ closeDialog(); startDanceOff(n); };
+  opts.appendChild(dbtn);
+  const x = document.createElement('button'); x.className='opt'; x.textContent='Уйти';
+  x.onclick = closeDialog; opts.appendChild(x);
+}
+
 function openJunkie(n){
   const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
   dlg.querySelector('.who').textContent = '🧟 Дикий торчок';
@@ -2144,11 +2263,15 @@ function checkDawn(){
   const st = S.stats, done = Object.keys(S.challenges).length;
   const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
   dlg.querySelector('.who').textContent = `🌅 06:00 — РАССВЕТ · Ночь ${S.night}`;
+  const romanceEnd = S.romanceSealed || (S.romance>=3);
   dlg.querySelector('.txt').innerHTML =
-    (enlightened
+    (romanceEnd
+      ? `🌸 Пси-фея находит тебя в редеющей толпе и берёт за руку. Вы вдвоём смотрите, как над клубом встаёт розовое солнце. Что бы ни была эта ночь — она была <b style="color:#ff2e88">не зря</b>.`
+      : enlightened
       ? `Небо порозовело. Ты стоишь посреди редеющей толпы — уставший, живой, <b style="color:#ffb01e">просветлённый</b>. Ночь прожита до дна.`
       : `Ты встречаешь рассвет в полуотключке на пуфе. Голова гудит, тяга скребёт. Может, в следующий раз — аккуратнее.`)
     + `<div style="margin-top:12px;font-size:12px;line-height:1.9;color:#bcd;text-align:left">`
+    + (crewSize()? `Тусовка: <b>${crewSize()}</b> ${romanceEnd?'· 💞 Пси-фея':''}<br>`:'')
     + `Вайб: <b>${S.vibe|0}</b> · Токсичность: <b>${(S.tox*100)|0}%</b> · REP: <b>${S.rep}</b><br>`
     + `Доз принято: <b>${st.doses}</b> (${Object.keys(st.uniq).length} разных)<br>`
     + `Заработано: <b>₽${st.earned}</b> · Потрачено: <b>₽${st.spent}</b><br>`
@@ -2186,6 +2309,7 @@ function saveGame(){
       mephTol:S.mephTol, crave:S.crave, log:S.log, contacts:S.contacts,
       heat:S.heat, hotbar:S.hotbar, night:S.night, stats:S.stats, challenges:S.challenges,
       badtrip:S.badtrip, dirtyBatch:S.dirtyBatch, dirtyBatchT:S.dirtyBatchT,
+      romance:S.romance, romanceSealed:S.romanceSealed,
       tripReports:S.tripReports, tutorial:S.tutorial, settings:S.settings,
       pos:[player.pos.x,player.pos.y,player.pos.z],
     }));
@@ -2214,6 +2338,8 @@ function loadGame(){
     if (typeof d.badtrip === 'number') S.badtrip = d.badtrip;
     if (d.dirtyBatch!==undefined) S.dirtyBatch = d.dirtyBatch;
     if (typeof d.dirtyBatchT === 'number') S.dirtyBatchT = d.dirtyBatchT;
+    if (typeof d.romance === 'number') S.romance = d.romance;
+    if (d.romanceSealed) S.romanceSealed = d.romanceSealed;
     if (d.stats) Object.assign(S.stats, d.stats);
     if (d.challenges) S.challenges = d.challenges;
     if (Array.isArray(d.hotbar) && d.hotbar.every(id=>SUB[id])) S.hotbar = d.hotbar;
@@ -2249,7 +2375,14 @@ function updateHUD(){
   el('stTol').textContent = S.mephTol>0.05 ? `толерантность к мефу ${(S.mephTol*100)|0}%` : '';
   el('clock').textContent = fmtClock(S.gameMin);
   const z = currentZone(); el('zone-label').textContent = z ? z.name : 'ТЕРРИТОРИЯ';
-  el('rhythm').style.display = inDanceZone() ? 'block' : 'none';
+  el('rhythm').style.display = (inDanceZone() || danceOff) ? 'block' : 'none';
+  if (danceOff){
+    el('rhythm').querySelector('.tip').textContent = `🕺 БАТЛ! ${danceOff.hits}/${danceOff.target} · ${danceOff.t.toFixed(1)}с`;
+    el('rhythm').querySelector('.tip').style.color = '#ffb01e';
+  } else {
+    el('rhythm').querySelector('.tip').textContent = 'SPACE в такт биту — держи комбо';
+    el('rhythm').querySelector('.tip').style.color = '';
+  }
   if (TOUCH){
     el('tbJump').textContent = inDanceZone() ? '♪' : '⤒'; // контекст: ритм/прыжок
     el('tbUse').textContent = (S.inv[S.hotbar[S.slot]]||0) > 0 ? SUB[S.hotbar[S.slot]].icon : '✕';
@@ -2620,6 +2753,11 @@ window.__raid = ()=>startRaid();
 window.__shift = ()=>triggerShiftChange();
 window.__search = ()=>searchEncounter(false);
 window.__ditch = ()=>{ if(ditch) return ditch; };
+window.__crew = ()=>{ const r=npcs.find(n=>n.raver&&!n.friend); if(r){befriend(r); return r.name;} };
+window.__crewSize = ()=>crewSize();
+window.__psy = ()=>{ const p=npcs.find(n=>n.name==='Пси-фея'); if(p){p.mesh.position.set(player.pos.x+2,0,player.pos.z); openPsyFairy(p);} };
+window.__danceoff = ()=>{ const p=npcs.find(n=>n.raver); startDanceOff(p); return danceOff && {target:danceOff.target}; };
+window.__doState = ()=>danceOff && {hits:danceOff.hits, t:+danceOff.t.toFixed(1)};
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -2641,6 +2779,7 @@ function loop(){
     updateBadTrip(dtGameMin);
     updateRaid(dt);
     updateDitch(dt);
+    updateDanceOff(dt);
     updatePlayer(dt*timeMul);
     updateNPCs(dt*timeMul);
     updateSocial(dt);
