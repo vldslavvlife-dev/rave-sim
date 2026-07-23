@@ -1,0 +1,1425 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NEON TRIP: Rave Chemistry</title>
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+  NEON TRIP: Rave Chemistry — одиночный self-contained HTML файл.
+
+  Архитектура (секции ниже по коду):
+    [S1]  CSS / диегетический UI (HUD, телефон, оверлеи трипа)
+    [S2]  Import map: Three.js WebGPU-сборка (WebGPURenderer сам падает в
+          WebGL2-бэкенд на устройствах без WebGPU — это и есть фолбэк)
+    [S3]  Конфиг веществ и фармакокинетика (кривые onset/peak/decay,
+          тяга к мефедрону, толерантность, токсичность миксов)
+    [S4]  Аудио-движок: генеративное техно на Web Audio, сердцебиение,
+          фильтры восприятия под веществами
+    [S5]  Мир: зоны клуба, инстансированная толпа, лазеры, стробы, частицы
+    [S6]  NPC: дилеры, рейверы с циклами употребления, маскот, события
+    [S7]  Игрок: контроллер, камера 1/3 лицо, мини-игры употребления
+    [S8]  Визуальные эффекты интоксикации (CSS-фильтр-пайплайн поверх
+          рендера + оверлеи: калейдоскоп, виньетка тяги, двоение контуров)
+    [S9]  Игровой цикл, ритм-танцы, экономика, передоз, сохранение
+    [S10] UI-логика: старт, кастомизация, пауза, телефон, карта, туториал
+
+  Дисклеймер: художественная симуляция. Все "мини-игры употребления" —
+  абстрактные жесты мыши, не инструкции. Встроен Harm Reduction Mode.
+  ═══════════════════════════════════════════════════════════════════════════
+-->
+<style>
+/* ═══ [S1] БАЗА И UI ═══════════════════════════════════════════════════ */
+:root{
+  --neon-pink:#ff2e88; --neon-cyan:#19f0ff; --neon-purple:#a02eff;
+  --neon-green:#39ff6a; --neon-amber:#ffb01e; --danger:#ff2222;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;
+  font-family:'Segoe UI',system-ui,sans-serif;color:#eee;user-select:none;
+  -webkit-user-select:none;touch-action:none}
+#game-canvas{position:fixed;inset:0;display:block;
+  transition:filter .35s ease} /* фильтр = пайплайн интоксикации */
+/* ── оверлеи трипа ── */
+.fx{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity 1s}
+#fx-vignette{background:radial-gradient(ellipse at center,transparent 40%,rgba(0,0,0,.95) 100%)}
+#fx-craving{background:radial-gradient(ellipse at center,transparent 30%,rgba(120,0,60,.85) 100%);
+  animation:cravePulse 1.4s ease-in-out infinite}
+@keyframes cravePulse{0%,100%{opacity:var(--crave,0)}50%{opacity:calc(var(--crave,0)*.55)}}
+#fx-kaleido{mix-blend-mode:screen;background:
+  repeating-conic-gradient(from 0deg,rgba(255,46,136,.16) 0 15deg,rgba(25,240,255,.14) 15deg 30deg,
+  rgba(160,46,255,.16) 30deg 45deg,transparent 45deg 60deg);
+  animation:kaleidoSpin 24s linear infinite}
+@keyframes kaleidoSpin{to{transform:rotate(360deg) scale(1.4)}}
+#fx-mandala{mix-blend-mode:screen;background:
+  radial-gradient(circle at 50% 50%,rgba(255,120,200,.25) 0 6%,transparent 7% 12%,
+  rgba(255,180,80,.18) 13% 16%,transparent 17% 24%,rgba(120,255,180,.15) 25% 27%,transparent 28%);
+  animation:mandalaBreath 5s ease-in-out infinite}
+@keyframes mandalaBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.25)}}
+#fx-powder{background:radial-gradient(ellipse at 50% 100%,rgba(255,150,190,.5) 0%,transparent 55%)}
+#fx-heartbeat{box-shadow:inset 0 0 220px rgba(255,0,0,.55)}
+#fx-flash{background:#fff;transition:opacity .08s}
+/* ── HUD ── */
+#hud{position:fixed;inset:0;pointer-events:none;display:none;z-index:20}
+#hud.on{display:block}
+.bars{position:fixed;left:18px;bottom:18px;width:230px;display:flex;flex-direction:column;gap:6px}
+.bar{position:relative;height:14px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.25);
+  border-radius:7px;overflow:hidden}
+.bar>i{position:absolute;inset:0;width:0%;transition:width .3s;border-radius:7px}
+.bar>b{position:absolute;left:8px;top:-1px;font-size:10px;font-weight:600;letter-spacing:.5px;
+  text-shadow:0 0 4px #000;z-index:2}
+#b-vibe>i{background:linear-gradient(90deg,#a02eff,#ff2e88)}
+#b-tox>i{background:linear-gradient(90deg,#5aff5a,#ffb01e 60%,#ff2222)}
+#b-alco>i{background:linear-gradient(90deg,#ffb01e,#ff7300)}
+#b-stim>i{background:linear-gradient(90deg,#19f0ff,#fff)}
+#b-psy>i{background:linear-gradient(90deg,#39ff6a,#a02eff)}
+#b-opi>i{background:linear-gradient(90deg,#4455ff,#111)}
+#b-crave{border-color:#ff2e88}
+#b-crave>i{background:repeating-linear-gradient(45deg,#ff2e88 0 6px,#7a0038 6px 12px)}
+#b-crave.blink{animation:barBlink .6s steps(2) infinite}
+@keyframes barBlink{50%{border-color:#fff;box-shadow:0 0 12px #ff2e88}}
+#stats{position:fixed;right:18px;top:16px;text-align:right;font-size:14px;
+  text-shadow:0 0 6px #000}
+#stats .money{color:var(--neon-green);font-size:18px;font-weight:700}
+#stats .rep{color:var(--neon-purple)}
+#clock{position:fixed;top:16px;left:50%;transform:translateX(-50%);font-size:22px;
+  font-weight:200;letter-spacing:4px;color:var(--neon-cyan);text-shadow:0 0 12px var(--neon-cyan)}
+#zone-label{position:fixed;top:48px;left:50%;transform:translateX(-50%);font-size:12px;
+  color:#aaa;letter-spacing:2px;text-transform:uppercase}
+#crosshair{position:fixed;left:50%;top:50%;width:6px;height:6px;margin:-3px;
+  border-radius:50%;background:rgba(255,255,255,.7);box-shadow:0 0 6px #fff}
+#interact-hint{position:fixed;left:50%;top:58%;transform:translateX(-50%);
+  background:rgba(0,0,0,.7);border:1px solid var(--neon-cyan);padding:6px 14px;border-radius:6px;
+  font-size:14px;display:none;box-shadow:0 0 14px rgba(25,240,255,.4)}
+#toasts{position:fixed;left:50%;top:12%;transform:translateX(-50%);display:flex;
+  flex-direction:column;gap:6px;align-items:center;pointer-events:none;z-index:60}
+.toast{background:rgba(10,0,20,.85);border:1px solid var(--neon-purple);color:#fff;
+  padding:8px 18px;border-radius:20px;font-size:14px;box-shadow:0 0 16px rgba(160,46,255,.5);
+  animation:toastIn .3s ease,toastOut .5s ease 3.4s forwards;max-width:70vw;text-align:center}
+@keyframes toastIn{from{opacity:0;transform:translateY(-12px)}}
+@keyframes toastOut{to{opacity:0;transform:translateY(-10px)}}
+/* ── хотбар ── */
+#hotbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+.slot{width:56px;height:56px;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.3);
+  border-radius:8px;position:relative;display:flex;align-items:center;justify-content:center;
+  font-size:24px}
+.slot.sel{border-color:var(--neon-pink);box-shadow:0 0 14px rgba(255,46,136,.7)}
+.slot .k{position:absolute;top:2px;left:5px;font-size:9px;color:#999}
+.slot .n{position:absolute;bottom:2px;right:5px;font-size:11px;font-weight:700;color:#fff;
+  text-shadow:0 0 3px #000}
+/* ── мини-игра употребления ── */
+#usegame{position:fixed;left:50%;top:65%;transform:translateX(-50%);text-align:center;display:none}
+#usegame .ring{width:90px;height:90px;margin:0 auto 8px;border-radius:50%;
+  background:conic-gradient(var(--neon-pink) calc(var(--p,0)*1%),rgba(255,255,255,.12) 0)}
+#usegame .lbl{font-size:13px;color:#ffd;text-shadow:0 0 6px #000}
+/* ── ритм ── */
+#rhythm{position:fixed;right:18px;bottom:120px;width:180px;display:none;text-align:center}
+#rhythm .pulse{width:70px;height:70px;margin:0 auto;border:3px solid var(--neon-cyan);
+  border-radius:50%;transition:transform .08s,box-shadow .08s}
+#rhythm .combo{font-size:20px;font-weight:800;color:var(--neon-amber);text-shadow:0 0 8px #000}
+#rhythm .tip{font-size:10px;color:#9ad}
+/* ── панели (телефон/карта/диалог) ── */
+.panel{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.55);z-index:80}
+.panel.on{display:flex}
+#phone .body{width:320px;max-height:78vh;background:#0a0a14;border:2px solid #333;
+  border-radius:26px;padding:20px 16px;overflow-y:auto;box-shadow:0 0 40px rgba(25,240,255,.25)}
+#phone h3{color:var(--neon-cyan);font-weight:300;letter-spacing:2px;margin-bottom:10px}
+.ph-sec{margin-bottom:14px;border-top:1px solid #222;padding-top:8px}
+.ph-sec h4{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.dose-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:#cde}
+.dose-row .t{color:var(--neon-amber)}
+.contact{font-size:13px;padding:4px 0;color:#fbd}
+#mapPanel .body{width:min(80vw,560px);background:#05050f;border:1px solid var(--neon-purple);
+  border-radius:12px;padding:18px;box-shadow:0 0 40px rgba(160,46,255,.4)}
+#mapCanvas{width:100%;image-rendering:pixelated;border:1px solid #223;border-radius:6px;background:#02020a}
+#mapPanel h3{color:var(--neon-purple);font-weight:300;letter-spacing:3px;margin-bottom:8px}
+#setlist{font-size:11px;color:#9ad;margin-top:8px;line-height:1.7}
+#dialog{z-index:90}
+#dialog .body{width:min(88vw,460px);background:rgba(8,2,16,.96);border:1px solid var(--neon-pink);
+  border-radius:14px;padding:20px;box-shadow:0 0 30px rgba(255,46,136,.4)}
+#dialog .who{color:var(--neon-pink);font-weight:700;margin-bottom:6px}
+#dialog .txt{font-size:14px;line-height:1.5;color:#eee;margin-bottom:14px;min-height:40px}
+#dialog .opts{display:flex;flex-direction:column;gap:6px}
+.opt{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.2);color:#fff;
+  padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13px;text-align:left;pointer-events:auto}
+.opt:hover{border-color:var(--neon-cyan);background:rgba(25,240,255,.1)}
+.opt .price{float:right;color:var(--neon-green)}
+.opt.danger{border-color:var(--danger)}
+/* ── передоз ── */
+#odPanel{z-index:120;background:rgba(20,0,0,.8)}
+#odPanel .body{text-align:center}
+#odPanel h2{color:var(--danger);font-size:34px;letter-spacing:4px;animation:barBlink .5s steps(2) infinite}
+#odPanel .sub{color:#faa;margin:10px 0 16px}
+#odMash{font-size:60px;font-weight:900;color:#fff}
+/* ── стартовый экран ── */
+#start{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(ellipse at 50% 120%,#1a0030 0%,#000 70%)}
+#start .inner{text-align:center;max-width:640px;padding:20px}
+#logo{font-size:clamp(34px,7vw,74px);font-weight:900;letter-spacing:3px;
+  background:linear-gradient(90deg,var(--neon-pink),var(--neon-cyan),var(--neon-purple));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 0 22px rgba(255,46,136,.6));animation:logoPulse 2.2s ease-in-out infinite}
+@keyframes logoPulse{50%{filter:drop-shadow(0 0 40px rgba(25,240,255,.8))}}
+#start .sub{color:var(--neon-cyan);letter-spacing:6px;font-size:14px;margin:4px 0 22px}
+#warn{border:1px solid var(--danger);background:rgba(60,0,0,.4);color:#fbb;font-size:12px;
+  padding:10px 14px;border-radius:8px;margin:0 auto 22px;line-height:1.5;max-width:520px}
+.custom{display:flex;gap:18px;justify-content:center;margin-bottom:22px;flex-wrap:wrap;font-size:12px;color:#aac}
+.custom label{display:flex;flex-direction:column;gap:6px;align-items:center}
+.custom input[type=color]{width:52px;height:30px;border:none;background:none;cursor:pointer}
+.custom select{background:#111;color:#eee;border:1px solid #444;padding:5px;border-radius:6px}
+.bigbtn{background:linear-gradient(90deg,var(--neon-pink),var(--neon-purple));border:none;color:#fff;
+  font-size:19px;font-weight:700;letter-spacing:2px;padding:14px 46px;border-radius:40px;cursor:pointer;
+  box-shadow:0 0 26px rgba(255,46,136,.6);transition:transform .15s}
+.bigbtn:hover{transform:scale(1.06)}
+.bigbtn.ghost{background:none;border:1px solid #555;font-size:13px;padding:10px 24px;box-shadow:none;margin-top:10px}
+#start .ctl{color:#667;font-size:11px;margin-top:22px;line-height:1.8}
+/* ── пауза ── */
+#pause .body{width:min(88vw,420px);background:#0a0a16;border:1px solid var(--neon-cyan);
+  border-radius:14px;padding:24px}
+#pause h2{color:var(--neon-cyan);font-weight:300;letter-spacing:3px;margin-bottom:16px}
+.setrow{display:flex;justify-content:space-between;align-items:center;font-size:13px;
+  padding:8px 0;border-bottom:1px solid #1a1a2a;color:#cde}
+.setrow input[type=range]{width:120px}
+/* ── мобильный джойстик ── */
+#joyL,#joyR{position:fixed;bottom:70px;width:110px;height:110px;border-radius:50%;
+  border:2px solid rgba(255,255,255,.25);display:none;z-index:50}
+#joyL{left:24px}#joyR{right:24px}
+#joyL .knob,#joyR .knob{position:absolute;left:35px;top:35px;width:40px;height:40px;border-radius:50%;
+  background:rgba(255,255,255,.3)}
+body.touch #joyL,body.touch #joyR{display:block}
+#errbox{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:999;
+  background:#000;color:#f88;font-size:14px;text-align:center;padding:30px;line-height:1.7}
+</style>
+</head>
+<body>
+
+<!-- ═══ [S2] IMPORT MAP: WebGPU-сборка Three.js.
+     WebGPURenderer автоматически использует WebGL2-бэкенд, если WebGPU
+     недоступен — плавная деградация на слабых устройствах. ═══ -->
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.webgpu.js",
+  "three/webgpu":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.webgpu.js",
+  "three/tsl":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.tsl.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"
+}}
+</script>
+
+<canvas id="game-canvas"></canvas>
+
+<!-- оверлеи трипа -->
+<div id="fx-kaleido" class="fx"></div>
+<div id="fx-mandala" class="fx"></div>
+<div id="fx-powder" class="fx"></div>
+<div id="fx-vignette" class="fx"></div>
+<div id="fx-craving" class="fx"></div>
+<div id="fx-heartbeat" class="fx"></div>
+<div id="fx-flash" class="fx"></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="clock">23:00</div>
+  <div id="zone-label">ВХОД</div>
+  <div id="crosshair"></div>
+  <div id="stats">
+    <div class="money">₽ <span id="stMoney">1500</span></div>
+    <div class="rep">REP <span id="stRep">0</span></div>
+    <div style="color:#8ff;font-size:11px" id="stTol"></div>
+  </div>
+  <div class="bars">
+    <div class="bar" id="b-vibe"><b>ВАЙБ</b><i></i></div>
+    <div class="bar" id="b-tox"><b>ТОКСИЧНОСТЬ</b><i></i></div>
+    <div class="bar" id="b-alco"><b>АЛКОГОЛЬ</b><i></i></div>
+    <div class="bar" id="b-stim"><b>СТИМУЛЯТОРЫ</b><i></i></div>
+    <div class="bar" id="b-psy"><b>ПСИХОДЕЛИКИ</b><i></i></div>
+    <div class="bar" id="b-opi"><b>ОПИАТЫ/ДИССО</b><i></i></div>
+    <div class="bar" id="b-crave"><b>ТЯГА (МЕФ)</b><i></i></div>
+  </div>
+  <div id="hotbar"></div>
+  <div id="interact-hint"></div>
+  <div id="usegame"><div class="ring"></div><div class="lbl"></div></div>
+  <div id="rhythm">
+    <div class="pulse"></div>
+    <div class="combo">x<span id="comboN">0</span></div>
+    <div class="tip">SPACE в такт биту — держи комбо</div>
+  </div>
+</div>
+<div id="toasts"></div>
+
+<!-- Телефон -->
+<div id="phone" class="panel"><div class="body">
+  <h3>📱 23:00 · NEON TRIP</h3>
+  <div class="ph-sec"><h4>Активные приходы</h4><div id="phDoses"></div></div>
+  <div class="ph-sec"><h4>Журнал доз</h4><div id="phLog" style="font-size:11px;color:#89a"></div></div>
+  <div class="ph-sec"><h4>Контакты</h4><div id="phContacts"></div></div>
+  <div class="ph-sec"><h4>Harm Reduction</h4><div id="phHarm" style="font-size:11px;color:#7c8"></div></div>
+</div></div>
+
+<!-- Карта -->
+<div id="mapPanel" class="panel"><div class="body">
+  <h3>КАРТА ФЕСТИВАЛЯ · TAB</h3>
+  <canvas id="mapCanvas" width="512" height="512"></canvas>
+  <div id="setlist"></div>
+</div></div>
+
+<!-- Диалог -->
+<div id="dialog" class="panel"><div class="body">
+  <div class="who"></div><div class="txt"></div><div class="opts"></div>
+</div></div>
+
+<!-- Передоз -->
+<div id="odPanel" class="panel"><div class="body">
+  <h2>ПЕРЕДОЗ</h2>
+  <div class="sub">Сердце срывается. Жми <b>E</b> изо всех сил или <b>H</b> — вызвать медика!</div>
+  <div id="odMash">0%</div>
+</div></div>
+
+<!-- Пауза -->
+<div id="pause" class="panel"><div class="body">
+  <h2>ПАУЗА</h2>
+  <div class="setrow"><span>Стробоскопы</span><input type="checkbox" id="setStrobe" checked></div>
+  <div class="setrow"><span>Интенсивность трипа</span><input type="range" id="setTrip" min="0" max="100" value="100"></div>
+  <div class="setrow"><span>Режим «только алкоголь»</span><input type="checkbox" id="setAlcoOnly"></div>
+  <div class="setrow"><span>Harm Reduction Mode</span><input type="checkbox" id="setHarm" checked></div>
+  <div class="setrow"><span>Громкость музыки</span><input type="range" id="setVol" min="0" max="100" value="70"></div>
+  <div style="margin-top:16px;display:flex;gap:10px">
+    <button class="bigbtn" style="font-size:14px;padding:10px 24px" id="btnResume">Продолжить</button>
+    <button class="bigbtn ghost" id="btnReset" style="margin:0">Сбросить ночь</button>
+  </div>
+</div></div>
+
+<!-- Старт -->
+<div id="start"><div class="inner">
+  <div id="logo">NEON TRIP</div>
+  <div class="sub">RAVE CHEMISTRY · ОДНА НОЧЬ</div>
+  <div id="warn">⚠ 18+. Художественная симуляция ночи фестиваля. Игра изображает употребление
+    веществ и его последствия — передозировки, тягу, «ямы» после спада. Это вымысел, а не
+    руководство. Реальная химия непредсказуема и разрушительна. Если тебе или близким нужна
+    помощь — она существует.</div>
+  <div class="custom">
+    <label>Прикид<input type="color" id="cOutfit" value="#ff2e88"></label>
+    <label>Волосы<input type="color" id="cHair" value="#19f0ff"></label>
+    <label>Камера<select id="cCam"><option value="3">3-е лицо</option><option value="1">1-е лицо</option></select></label>
+  </div>
+  <button class="bigbtn" id="btnStart">ВОЙТИ В НОЧЬ</button><br>
+  <button class="bigbtn ghost" id="btnContinue" style="display:none">Продолжить сохранённую ночь</button>
+  <div class="ctl">WASD — движение · SHIFT — бег · SPACE — прыжок/ритм · E — взаимодействие · ЛКМ — принять вещество<br>
+  1-6 — хотбар · F — телефон · TAB — карта · V — камера · H — медик · ESC — пауза</div>
+</div></div>
+
+<div id="joyL"><div class="knob"></div></div>
+<div id="joyR"><div class="knob"></div></div>
+<div id="errbox"></div>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ═══ [S3] ХИМИЧЕСКИЙ ДВИЖОК ══════════════════════════════════════════════
+   Каждое вещество: канал воздействия, кривая (onset→peak→dur, в игровых
+   минутах), сила, токсичность, цена, тяга (для мефа). Игровое время:
+   1 реальная секунда = 30 игровых секунд → ночь 23:00-06:00 ≈ 14 минут. */
+const TIME_SCALE = 30;
+const SUB = {
+  beer:      {icon:'🍺', name:'Пиво',        ch:'alco', onset:3,  peak:25, dur:70,  pow:.22, tox:.03, price:150,  method:'drink'},
+  vodka:     {icon:'🥃', name:'Водка-шот',   ch:'alco', onset:2,  peak:15, dur:60,  pow:.45, tox:.07, price:250,  method:'drink'},
+  cocktail:  {icon:'🍹', name:'Неон-коктейль',ch:'alco',onset:3,  peak:20, dur:65,  pow:.33, tox:.05, price:400,  method:'drink'},
+  meph:      {icon:'💗', name:'Мефедрон',    ch:'stim', onset:4,  peak:20, dur:75,  pow:1.0, tox:.20, price:1800, method:'snort', empath:1, crave:1},
+  coke:      {icon:'❄️', name:'Кокаин',      ch:'stim', onset:1,  peak:8,  dur:30,  pow:.8,  tox:.18, price:4000, method:'snort'},
+  mdma:      {icon:'💊', name:'MDMA',        ch:'stim', onset:12, peak:60, dur:180, pow:.85, tox:.22, price:1200, method:'pill', empath:.8},
+  lsd:       {icon:'🌈', name:'Марка',       ch:'psy',  onset:20, peak:90, dur:300, pow:1.0, tox:.06, price:900,  method:'pill'},
+  ket:       {icon:'🕳️', name:'Кетамин',    ch:'opi',  onset:2,  peak:12, dur:45,  pow:.8,  tox:.15, price:1500, method:'inject'},
+  her:       {icon:'💉', name:'Герыч',       ch:'opi',  onset:1,  peak:10, dur:120, pow:1.0, tox:.45, price:2500, method:'inject'},
+  water:     {icon:'💧', name:'Вода',        ch:'aid',  onset:0,  peak:1,  dur:1,   pow:0,   tox:-.08,price:100,  method:'drink'},
+  antidote:  {icon:'🧪', name:'Антидот',     ch:'aid',  onset:0,  peak:1,  dur:1,   pow:0,   tox:-.35,price:1200, method:'drink'},
+  pinkline:  {icon:'🌸', name:'Розовая дорожка', ch:'stim', onset:2, peak:25, dur:110, pow:1.3, tox:.10, price:0, method:'snort', empath:1.4, crave:.5, legend:1},
+};
+const HOTBAR = ['beer','meph','mdma','ket','water','antidote'];
+
+// Состояние игрока / ночи
+const S = {
+  started:false, paused:false, dead:false, camMode:3,
+  money:1500, rep:0, vibe:30, tox:0,
+  lvl:{alco:0, stim:0, psy:0, opi:0}, empathy:0,
+  crave:0, mephTol:0, doses:[], log:[],
+  inv:{beer:2, meph:0, coke:0, mdma:0, lsd:0, ket:0, her:0, water:1, antidote:0, vodka:0, cocktail:0, pinkline:0},
+  slot:0, gameMin:0, // минут с 23:00
+  contacts:['🐱 Мяу-дилер (главный танцпол)'],
+  tripReports:[], serotoninStorm:false, combo:0,
+  settings:{strobe:true, trip:1, alcoOnly:false, harm:true, vol:.7},
+  tutorial:0,
+};
+
+// Кривая эффекта дозы: 0→1 к пику, плато, экспоненциальный спад.
+// Возвращает [уровень, фаза] где фаза: 'up' | 'peak' | 'down' | 'done'
+function doseCurve(d, nowMin){
+  const t = nowMin - d.t0, s = SUB[d.id];
+  if (t < 0) return [0,'up'];
+  if (t < s.onset) return [ (t/s.onset)**1.6, 'up' ]; // плавное нарастание
+  if (t < s.peak)  return [ 1, 'peak' ];
+  const decay = Math.exp(-(t-s.peak)/((s.dur-s.peak)*.45));
+  return [ decay, decay < .04 ? 'done' : 'down' ];
+}
+
+function takeDose(id, opts={}){
+  const s = SUB[id];
+  if (S.settings.alcoOnly && s.ch!=='alco' && s.ch!=='aid'){ toast('Режим «только алкоголь» включён'); return false; }
+  if (S.inv[id] <= 0){ toast('Нет в инвентаре'); return false; }
+  // Harm Reduction: предупреждение при компульсивном дозировании
+  if (S.settings.harm && s.crave){
+    const last = S.doses.filter(d=>d.id===id).pop();
+    if (last && (S.gameMin - last.t0) < SUB[id].peak){
+      toast('⚠ HR: слишком рано догоняться — пик ещё не прошёл'); }
+  }
+  S.inv[id]--;
+  saveGame(); // автосейв перед каждым приёмом мефа и вообще любой дозы
+  const quality = opts.quality ?? (0.7 + Math.random()*0.3); // примеси
+  const tolMul = s.crave ? Math.max(.4, 1 - S.mephTol*.5) : 1;
+  S.doses.push({id, t0:S.gameMin, q:quality*tolMul, iv:s.method==='inject'});
+  S.log.push(`${fmtClock(S.gameMin)} — ${s.name}${quality<.8?' (грязный)':''}`);
+  // токсичность приёма + множители миксов
+  let tox = s.tox * quality;
+  if (s.ch==='stim' && S.lvl.alco>.3) tox *= 1.6;          // стимы + алкоголь
+  if (s.ch==='opi'  && S.lvl.alco>.3) tox *= 1.8;          // опиаты + алкоголь
+  if (id==='meph' && S.lvl.stim>.5 && S.doses.some(d=>d.id==='mdma' && doseCurve(d,S.gameMin)[0]>.4)){
+    serotoninStorm();                                       // секретный трип
+  }
+  S.tox = Math.max(0, Math.min(1.2, S.tox + tox));
+  if (s.crave){ S.crave = 0; S.mephTol = Math.min(1, S.mephTol + .12); }
+  if (s.ch==='aid' && s.tox<0) toast(id==='water'?'💧 Полегчало':'🧪 Токсичность сбита');
+  audio.punch();
+  if (s.method==='snort') fxPowderPuff();
+  return true;
+}
+
+function serotoninStorm(){
+  if (S.serotoninStorm) return;
+  S.serotoninStorm = true;
+  toast('🌸💊 СЕРОТОНИНОВЫЙ ШТОРМ — музыка стала тактильной');
+  S.tripReports.push('Серотониновый шторм (меф+MDMA)');
+  S.vibe = Math.min(100, S.vibe + 40);
+  el('fx-mandala').style.opacity = .9;
+  setTimeout(()=>{ el('fx-mandala').style.opacity = 0; }, 45000);
+}
+
+/* Пересчёт уровней каналов каждый кадр */
+function updateChemistry(dtMin){
+  const L = {alco:0, stim:0, psy:0, opi:0}; let emp = 0;
+  for (const d of S.doses){
+    const s = SUB[d.id];
+    const [lv, phase] = doseCurve(d, S.gameMin);
+    d.phase = phase;
+    if (s.ch in L) L[s.ch] = Math.min(1.3, L[s.ch] + lv * s.pow * d.q);
+    if (s.empath) emp = Math.max(emp, lv * s.empath * d.q);
+  }
+  S.doses = S.doses.filter(d=>d.phase!=='done');
+  S.lvl = L; S.empathy = emp;
+
+  // Тяга к мефу: растёт после пика, резкий спад = «яма»
+  const meph = S.doses.filter(d=>SUB[d.id].crave);
+  if (meph.length){
+    const worst = meph[meph.length-1];
+    if (worst.phase==='down'){ S.crave = Math.min(1, S.crave + dtMin*.02*(1+S.mephTol)); S.vibe -= dtMin*.35; }
+    else if (worst.phase==='peak'){ S.vibe = Math.min(100, S.vibe + dtMin*.6); }
+  } else if (S.log.some(l=>l.includes('Мефедрон'))){
+    S.crave = Math.min(1, S.crave + dtMin*.012); // без вещества тяга ползёт вверх
+    if (S.crave > .5) S.vibe -= dtMin*.25;
+  }
+  // Естественный распад токсичности и вайба
+  S.tox = Math.max(0, S.tox - dtMin*.004);
+  S.vibe = Math.max(0, Math.min(100, S.vibe - dtMin*.05));
+  // Передоз
+  if (S.tox >= .95 && !od.active) startOverdose();
+}
+
+/* ═══ [S4] АУДИО: генеративное техно + перцептивные фильтры ═════════════ */
+const audio = (()=>{
+  let ctx, master, filt, delay, delayGain, started=false, bpm=132, step=0, nextT=0;
+  let heartOsc=null, heartTimer=0;
+  function init(){
+    if (started) return; started = true;
+    ctx = new (window.AudioContext||window.webkitAudioContext)();
+    master = ctx.createGain(); master.gain.value = S.settings.vol;
+    filt = ctx.createBiquadFilter(); filt.type='lowpass'; filt.frequency.value = 18000;
+    delay = ctx.createDelay(1); delay.delayTime.value = .32;
+    delayGain = ctx.createGain(); delayGain.gain.value = 0;
+    filt.connect(master); filt.connect(delay); delay.connect(delayGain); delayGain.connect(master);
+    master.connect(ctx.destination);
+    nextT = ctx.currentTime + .1;
+    setInterval(schedule, 40);
+  }
+  function osc(type, f, t, dur, vol, dest){
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.0001, t+dur);
+    o.connect(g); g.connect(dest||filt); o.start(t); o.stop(t+dur+.02);
+    return o;
+  }
+  function noise(t, dur, vol, hp){
+    const b = ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
+    const ch = b.getChannelData(0);
+    for (let i=0;i<ch.length;i++) ch[i] = Math.random()*2-1;
+    const src = ctx.createBufferSource(); src.buffer = b;
+    const f = ctx.createBiquadFilter(); f.type='highpass'; f.frequency.value = hp;
+    const g = ctx.createGain(); g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+    src.connect(f); f.connect(g); g.connect(filt); src.start(t); src.stop(t+dur);
+  }
+  function schedule(){
+    if (!ctx || S.paused) return;
+    const spb = 60/bpm/4; // 16-е
+    while (nextT < ctx.currentTime + .25){
+      const t = nextT, s16 = step%16;
+      if (s16%4===0){ // kick с pitch-drop
+        const o = osc('sine', 150, t, .25, .9);
+        o.frequency.exponentialRampToValueAtTime(40, t+.12);
+        beatFlash(t - ctx.currentTime);
+      }
+      if (s16%4===2) noise(t, .05, .25, 8000);            // хэт
+      if (s16===4||s16===12) noise(t, .18, .35, 2000);    // клэп-снейр
+      // бас-линия — псевдослучайная от шага, кислотный сдвиг под психоделиками
+      const bassNotes = [41.2, 41.2, 49, 41.2, 55, 41.2, 49, 61.7];
+      const bn = bassNotes[(step>>1)%8] * (1 + S.lvl.psy*.02*Math.sin(step));
+      if (s16%2===0) osc('sawtooth', bn, t, spb*1.8, .22);
+      // «сочные середины» под мефом — тёплый пад
+      if (S.empathy>.3 && s16===0){
+        osc('triangle', 220*(1+S.empathy*.1), t, spb*14, .10*S.empathy);
+        osc('triangle', 277, t, spb*14, .08*S.empathy);
+      }
+      nextT += spb; step++;
+    }
+  }
+  return {
+    init,
+    punch(){ if(ctx) noise(ctx.currentTime, .3, .5, 400); },
+    heartbeat(rate){ // rate 0..1 → пульс под стимами/токсом
+      if (!ctx) return;
+      heartTimer -= 1/60;
+      if (rate>.05 && heartTimer<=0){
+        const t = ctx.currentTime;
+        osc('sine', 55, t, .12, .5*rate, master);
+        osc('sine', 50, t+.18, .1, .35*rate, master);
+        heartTimer = 1.1 - rate*.55;
+        if (rate>.5) el('fx-heartbeat').style.opacity = rate;
+        else el('fx-heartbeat').style.opacity = 0;
+      } else if (rate<=.05) el('fx-heartbeat').style.opacity = 0;
+    },
+    update(){ // перцептивные фильтры
+      if (!ctx) return;
+      master.gain.value = S.settings.vol * (S.paused?0.15:1);
+      // опиаты глушат верха и замедляют, алкоголь мажет
+      filt.frequency.value = 18000 - S.lvl.opi*15000 - S.lvl.alco*6000;
+      delayGain.gain.value = Math.min(.5, S.empathy*.4 + S.lvl.psy*.35); // эхо на «вокале»
+      bpm = 132 * (1 - S.lvl.opi*.3) * (1 + S.lvl.stim*.06);
+    },
+    setVol(v){ if(master) master.gain.value = v; }
+  };
+})();
+
+let beatPulseT = 0;
+function beatFlash(delay){ setTimeout(()=>{ beatPulseT = 1; }, Math.max(0,delay*1000)); }
+
+/* ═══ [S5] МИР ═══════════════════════════════════════════════════════════ */
+let renderer, scene, camera, worldGroup, clock;
+let player, playerMesh, crowd, lasers=[], strobes=[], smokes=[], pool;
+const ZONES = [ // x,z,r,имя,цвет для карты
+  {x:0,   z:-40,  r:55, name:'ГЛАВНЫЙ ТАНЦПОЛ', c:'#ff2e88', dance:true},
+  {x:-150,z:-120, r:40, name:'ТЕХНО-БУНКЕР',    c:'#a02eff', dance:true},
+  {x:140, z:-100, r:38, name:'VIP-ЗОНА',        c:'#ffb01e'},
+  {x:90,  z:40,   r:25, name:'БАР',             c:'#39ff6a'},
+  {x:-80, z:50,   r:20, name:'ТУАЛЕТЫ',         c:'#19f0ff'},
+  {x:-160,z:10,   r:30, name:'ЧИЛЛ-ЗОНА',       c:'#ff7300'},
+  {x:170, z:-170, r:26, name:'ПОДЗЕМНЫЙ УРОВЕНЬ',c:'#666'},
+  {x:40,  z:90,   r:18, name:'МЕДПУНКТ',        c:'#fff'},
+  {x:0,   z:130,  r:20, name:'ВХОД',            c:'#888'},
+];
+function currentZone(){
+  for (const z of ZONES){
+    const dx = player.pos.x-z.x, dz = player.pos.z-z.z;
+    if (dx*dx+dz*dz < z.r*z.r) return z;
+  }
+  return null;
+}
+
+function neonMat(hex, intensity=2){
+  return new THREE.MeshStandardMaterial({color:0x111111, emissive:new THREE.Color(hex), emissiveIntensity:intensity});
+}
+
+async function buildWorld(){
+  scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x03000a, 0.006);
+  scene.background = new THREE.Color(0x03000a);
+  worldGroup = new THREE.Group(); scene.add(worldGroup);
+
+  // Земля: тёмный асфальт с неоновой сеткой
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(600,600),
+    new THREE.MeshStandardMaterial({color:0x0a0a12, roughness:.9, metalness:.1}));
+  ground.rotation.x = -Math.PI/2; worldGroup.add(ground);
+  const grid = new THREE.GridHelper(600, 60, 0x220a3a, 0x160828);
+  grid.position.y = .02; worldGroup.add(grid);
+
+  // Свет: тусклый ambient + луна + зональные точки
+  scene.add(new THREE.AmbientLight(0x303050, 1.1));
+  scene.add(new THREE.HemisphereLight(0x3a2a6a, 0x0a0a14, .8));
+  const moon = new THREE.DirectionalLight(0x4455aa, .5); moon.position.set(80,120,40); scene.add(moon);
+
+  // ── Главная сцена: DJ-башня + арка + лазерный веер ──
+  const stage = new THREE.Group(); stage.position.set(0,-0,-85);
+  const booth = new THREE.Mesh(new THREE.BoxGeometry(30,8,10), new THREE.MeshStandardMaterial({color:0x14141c}));
+  booth.position.y = 4; stage.add(booth);
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(46,16), neonMat('#ff2e88',1.4));
+  screen.position.set(0,15,-4); stage.add(screen); stage.userData.screen = screen;
+  for (let i=0;i<7;i++){ // лазеры-веер
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(.06,.6,120,6,1,true),
+      new THREE.MeshBasicMaterial({color:0x19f0ff, transparent:true, opacity:.35, side:THREE.DoubleSide}));
+    beam.position.set((i-3)*6, 12, 0); beam.rotation.x = Math.PI/2.3;
+    stage.add(beam); lasers.push({mesh:beam, phase:i*.9, base:Math.PI/2.3});
+  }
+  worldGroup.add(stage); worldGroup.userData.stage = stage;
+
+  // Стробы над танцполом
+  for (let i=0;i<6;i++){
+    const l = new THREE.PointLight(0xffffff, 0, 90, 1.6);
+    l.position.set((i%3-1)*35, 18, -40 - Math.floor(i/3)*30);
+    scene.add(l); strobes.push(l);
+  }
+
+  // ── Техно-бункер: тёмная коробка с красным нутром ──
+  const bunker = new THREE.Group(); bunker.position.set(-150,0,-120);
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(70,16,60),
+    new THREE.MeshStandardMaterial({color:0x0c0c10, side:THREE.BackSide}));
+  shell.position.y = 8; bunker.add(shell);
+  const doorGlow = new THREE.Mesh(new THREE.PlaneGeometry(8,10), neonMat('#a02eff',3));
+  doorGlow.position.set(0,5,30.2); bunker.add(doorGlow);
+  const red = new THREE.PointLight(0xff2020, 8, 70, 1.8); red.position.y = 10; bunker.add(red);
+  worldGroup.add(bunker);
+
+  // ── VIP: платформа + светящийся бассейн ──
+  const vip = new THREE.Group(); vip.position.set(140,0,-100);
+  const plat = new THREE.Mesh(new THREE.CylinderGeometry(34,36,3,24),
+    new THREE.MeshStandardMaterial({color:0x1a1420, metalness:.6, roughness:.3}));
+  plat.position.y = 1.5; vip.add(plat);
+  pool = new THREE.Mesh(new THREE.CylinderGeometry(12,12,.6,32), neonMat('#19f0ff',1.8));
+  pool.position.set(8,3.2,-6); vip.add(pool);
+  const vl = new THREE.PointLight(0xffb01e, 5, 60, 1.6); vl.position.set(0,10,0); vip.add(vl);
+  worldGroup.add(vip);
+
+  // ── Бар ──
+  const bar = new THREE.Group(); bar.position.set(90,0,40);
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(24,3,4), neonMat('#39ff6a',.9));
+  counter.position.y = 1.5; bar.add(counter);
+  const barSign = new THREE.Mesh(new THREE.PlaneGeometry(14,3), neonMat('#39ff6a',2.5));
+  barSign.position.set(0,7,0); bar.add(barSign);
+  worldGroup.add(bar);
+
+  // ── Туалеты: блок кабинок ──
+  const wc = new THREE.Group(); wc.position.set(-80,0,50);
+  for (let i=0;i<5;i++){
+    const cab = new THREE.Mesh(new THREE.BoxGeometry(4,6,5),
+      new THREE.MeshStandardMaterial({color:0x101820}));
+    cab.position.set(i*5-10,3,0); wc.add(cab);
+  }
+  const wcSign = new THREE.Mesh(new THREE.PlaneGeometry(6,2), neonMat('#19f0ff',2)); wcSign.position.set(0,7.5,0); wc.add(wcSign);
+  worldGroup.add(wc);
+
+  // ── Чилл-зона: пуфы + кострище ──
+  const chill = new THREE.Group(); chill.position.set(-160,0,10);
+  for (let i=0;i<8;i++){
+    const puf = new THREE.Mesh(new THREE.SphereGeometry(1.6,10,8),
+      new THREE.MeshStandardMaterial({color:new THREE.Color().setHSL(Math.random(),.6,.35)}));
+    const a = i/8*Math.PI*2; puf.position.set(Math.cos(a)*10,1,Math.sin(a)*10); puf.scale.y=.6; chill.add(puf);
+  }
+  const fire = new THREE.PointLight(0xff6a1e, 6, 40, 1.7); fire.position.y = 2; chill.add(fire);
+  chill.userData.fire = fire; worldGroup.add(chill); worldGroup.userData.chill = chill;
+
+  // ── Подземный уровень: люк + туннель-намёк + мини-лаб ──
+  const under = new THREE.Group(); under.position.set(170,0,-170);
+  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(4,4,.5,16), neonMat('#888',.5));
+  hatch.position.y=.25; under.add(hatch);
+  const labGlow = new THREE.PointLight(0x39ff6a, 3, 25, 2); labGlow.position.y=1; under.add(labGlow);
+  worldGroup.add(under);
+
+  // ── Медпункт: белая палатка с крестом ──
+  const med = new THREE.Group(); med.position.set(40,0,90);
+  const tent = new THREE.Mesh(new THREE.ConeGeometry(9,8,4),
+    new THREE.MeshStandardMaterial({color:0xd8d8e8, emissive:0x334, emissiveIntensity:.4}));
+  tent.position.y=4; tent.rotation.y=Math.PI/4; med.add(tent);
+  const cross = new THREE.Mesh(new THREE.PlaneGeometry(3,3), neonMat('#ff4444',2));
+  cross.position.set(0,4,6.5); med.add(cross);
+  worldGroup.add(med);
+
+  // ── Толпа: инстансированные рейверы с процедурным танцем ──
+  const CROWD_N = 360;
+  const capsule = new THREE.CapsuleGeometry(.38,1.1,3,8);
+  const crowdMat = new THREE.MeshStandardMaterial({roughness:.7});
+  crowd = new THREE.InstancedMesh(capsule, crowdMat, CROWD_N);
+  crowd.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  crowd.userData.agents = [];
+  const dummy = new THREE.Object3D();
+  for (let i=0;i<CROWD_N;i++){
+    // распределяем по танцевальным зонам
+    const z = Math.random()<.7 ? ZONES[0] : ZONES[1];
+    const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*z.r*.85;
+    const agent = {x:z.x+Math.cos(a)*r, z:z.z+Math.sin(a)*r,
+      phase:Math.random()*Math.PI*2, speed:.8+Math.random()*.8, hug:0};
+    crowd.userData.agents.push(agent);
+    dummy.position.set(agent.x, 1.1, agent.z); dummy.updateMatrix();
+    crowd.setMatrixAt(i, dummy.matrix);
+    crowd.setColorAt(i, new THREE.Color().setHSL(Math.random(), .8, .5));
+  }
+  worldGroup.add(crowd);
+
+  // ── Частицы дыма (инстансированные спрайт-плоскости не нужны — поинты) ──
+  const smokeGeo = new THREE.BufferGeometry();
+  const N=500, pos = new Float32Array(N*3);
+  for (let i=0;i<N;i++){ pos[i*3]=(Math.random()-.5)*140; pos[i*3+1]=Math.random()*14; pos[i*3+2]=-40+(Math.random()-.5)*120; }
+  smokeGeo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  const smoke = new THREE.Points(smokeGeo, new THREE.PointsMaterial({color:0x8866aa, size:2.4, transparent:true, opacity:.15, depthWrite:false}));
+  worldGroup.add(smoke); smokes.push(smoke);
+}
+
+/* ═══ [S6] NPC: дилеры, рейверы, маскот, события ═════════════════════════ */
+const npcs = [];
+function makeHuman(color, hairColor){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(.42,1.1,3,10),
+    new THREE.MeshStandardMaterial({color}));
+  body.position.y = 1.15; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(.3,12,10),
+    new THREE.MeshStandardMaterial({color:0xd9a884}));
+  head.position.y = 2.1; g.add(head);
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(.32,12,10,0,Math.PI*2,0,Math.PI/2),
+    new THREE.MeshStandardMaterial({color:hairColor||0x222222}));
+  hair.position.y = 2.16; g.add(hair);
+  g.userData.body = body; g.userData.head = head;
+  return g;
+}
+function addNPC(def){
+  const mesh = makeHuman(def.color||0x8888aa, def.hair);
+  mesh.position.set(def.x, 0, def.z);
+  if (def.mascot){ mesh.scale.setScalar(1.25); mesh.userData.body.material.emissive = new THREE.Color(0xff88cc); mesh.userData.body.material.emissiveIntensity=.4; }
+  worldGroup.add(mesh);
+  const npc = {...def, mesh, cool:0, cycle:Math.random()*100};
+  npcs.push(npc); return npc;
+}
+function spawnNPCs(){
+  // Дилеры по зонам
+  addNPC({x:6, z:-18, name:'Мяу-дилер 🐱', dealer:true, mascot:true, color:0xffc0e0,
+    stock:['meph','mdma','beer'], tutorial:true, priceMul:1});
+  addNPC({x:-148, z:-100, name:'Технарь', dealer:true, color:0x552266,
+    stock:['coke','meph','ket','lsd'], priceMul:.9, repNeed:0});
+  addNPC({x:145, z:-92, name:'VIP-Химик', dealer:true, color:0xccaa22,
+    stock:['coke','mdma','lsd','antidote'], priceMul:1.4, repNeed:20, pure:true});
+  addNPC({x:172, z:-168, name:'Лаборант', dealer:true, color:0x336633,
+    stock:['her','ket','meph','antidote'], priceMul:.8, repNeed:35, secret:true});
+  addNPC({x:-78, z:46, name:'Тип из кабинки', dealer:true, color:0x445566,
+    stock:['meph','coke'], priceMul:1.1});
+  addNPC({x:92, z:37, name:'Бармен', dealer:true, color:0x228855,
+    stock:['beer','vodka','cocktail','water'], priceMul:1, legalOnly:true});
+  addNPC({x:42, z:87, name:'Медик', medic:true, color:0xeeeeee});
+  addNPC({x:168, z:-160, name:'Передозный тролль', troll:true, color:0x113311});
+  // Обычные рейверы с циклами употребления (ищут→принимают→пикуют→отъезжают)
+  for (let i=0;i<14;i++){
+    const z = ZONES[Math.floor(Math.random()*6)];
+    addNPC({x:z.x+(Math.random()-.5)*z.r, z:z.z+(Math.random()-.5)*z.r,
+      name:['Кибер-няша','Растаман','Хардстайлщик','Пси-фея','Олд','Малой'][i%6],
+      raver:true, color:new THREE.Color().setHSL(Math.random(),.7,.5).getHex(),
+      state:'seek', stuck:Math.random()<.35});
+  }
+}
+function updateNPCs(dt){
+  for (const n of npcs){
+    n.cycle += dt;
+    const m = n.mesh;
+    if (n.raver){
+      // цикл: seek → use → peak → crash → seek...
+      const t = n.cycle % 60;
+      n.state = t<20?'seek' : t<25?'use' : t<45?'peak' : 'crash';
+      if (n.state==='seek'){ m.position.x += Math.sin(n.cycle*.5)*dt*2; m.position.z += Math.cos(n.cycle*.3)*dt*2; }
+      if (n.state==='peak'){ m.position.y = Math.abs(Math.sin(n.cycle*6))*.25; m.rotation.y += dt*2; }
+      if (n.state==='crash'){ m.position.y = 0; m.rotation.z = .4; } else m.rotation.z = 0;
+    }
+    if (n.mascot){ // маскот пружинит и мурлычет
+      m.position.y = Math.abs(Math.sin(n.cycle*4))*.3;
+    }
+    // эмпатическая волна: под мефом NPC тянутся обниматься
+    if (S.empathy>.5 && !n.dealer && !n.medic){
+      const dx = player.pos.x-m.position.x, dz = player.pos.z-m.position.z;
+      const d = Math.hypot(dx,dz);
+      if (d>2 && d<15){ m.position.x += dx/d*dt*1.2; m.position.z += dz/d*dt*1.2; }
+    }
+  }
+}
+// Динамические события
+let nextEventT = 90;
+function updateEvents(dt){
+  nextEventT -= dt;
+  if (nextEventT>0) return;
+  nextEventT = 100 + Math.random()*80;
+  const roll = Math.random();
+  if (roll<.35){
+    toast('💗 Волна кайфа прошла по толпе — массовые обнимашки!');
+    S.vibe = Math.min(100, S.vibe+8);
+  } else if (roll<.6){
+    toast('🚻 Шёпот: в туалетах раздают пробники...');
+    const wc = npcs.find(n=>n.name==='Тип из кабинки'); if (wc) wc.freebie = true;
+  } else if (roll<.8 && S.lvl.psy>.3){
+    toast('🪞 В зеркале мелькнул дилер-призрак... или показалось');
+    S.tripReports.push('Дилер-призрак в зеркале');
+  } else {
+    toast('🎧 Диджей врубил новый сет — толпа взорвалась');
+  }
+}
+
+/* ═══ [S7] ИГРОК: контроллер + мини-игры употребления ════════════════════ */
+player = { pos:new THREE.Vector3(0,0,125), vel:new THREE.Vector3(), yaw:0, pitch:0,
+  onGround:true, speed:0 };
+const keys = {};
+let useGame = null; // активная мини-игра приёма
+
+function buildPlayer(outfit, hair){
+  playerMesh = makeHuman(new THREE.Color(outfit).getHex(), new THREE.Color(hair).getHex());
+  // неоновая пропитка одежды — пульсирует в такт
+  playerMesh.userData.body.material.emissive = new THREE.Color(outfit);
+  playerMesh.userData.body.material.emissiveIntensity = .15;
+  worldGroup.add(playerMesh);
+  camera = new THREE.PerspectiveCamera(72, innerWidth/innerHeight, .1, 800);
+}
+function updatePlayer(dt){
+  const wobble = S.lvl.alco * .8; // шаткость походки
+  let mx=0, mz=0;
+  if (keys['KeyW']||joy.ly<-.3) mz -= 1;
+  if (keys['KeyS']||joy.ly>.3)  mz += 1;
+  if (keys['KeyA']||joy.lx<-.3) mx -= 1;
+  if (keys['KeyD']||joy.lx>.3)  mx += 1;
+  const running = (keys['ShiftLeft']||keys['ShiftRight']) && S.lvl.opi<.5 && S.tox<.8;
+  let sp = (running?11:5.5) * (1 - S.lvl.opi*.45) * (1 + S.lvl.stim*.25);
+  if (mx||mz){
+    const a = Math.atan2(mx,mz) + player.yaw;
+    const wob = wobble ? Math.sin(performance.now()*.004)*wobble*.5 : 0;
+    player.vel.x = Math.sin(a+wob)*sp; player.vel.z = Math.cos(a+wob)*sp;
+  } else { player.vel.x *= .8; player.vel.z *= .8; }
+  if ((keys['Space']) && player.onGround && !inDanceZone()){ player.vel.y = 7; player.onGround=false; }
+  player.vel.y -= 22*dt;
+  player.pos.addScaledVector(player.vel, dt);
+  if (player.pos.y<=0){ player.pos.y=0; player.vel.y=0; player.onGround=true; }
+  player.pos.x = THREE.MathUtils.clamp(player.pos.x,-290,290);
+  player.pos.z = THREE.MathUtils.clamp(player.pos.z,-290,290);
+  player.speed = Math.hypot(player.vel.x, player.vel.z);
+
+  playerMesh.position.copy(player.pos);
+  playerMesh.rotation.y = player.yaw;
+  playerMesh.visible = (S.camMode===3);
+  // пот/покраснение кожи под стимами: TSL-подобный сдвиг цвета материала
+  const skin = playerMesh.userData.head.material;
+  skin.color.setRGB(.85+.15*S.lvl.stim, .66-S.lvl.stim*.15, .52-S.lvl.stim*.1);
+  playerMesh.userData.body.material.emissiveIntensity = .15 + beatPulseT*.5 + S.empathy*.4;
+
+  // камера
+  const eyeH = 1.9, opiFloat = S.lvl.opi>.75 ? (S.lvl.opi-.75)*20 : 0; // «выход из тела»
+  const shake = S.tox>.7 ? (S.tox-.7)*.3 : 0;
+  const rx = (Math.random()-.5)*shake, ry = (Math.random()-.5)*shake;
+  if (S.camMode===1){
+    camera.position.set(player.pos.x+rx, player.pos.y+eyeH+opiFloat, player.pos.z+ry);
+  } else {
+    const back = 6 + opiFloat*1.5; // камера позади игрока по направлению взгляда
+    camera.position.set(
+      player.pos.x + Math.sin(player.yaw)*back + rx,
+      player.pos.y + 3.2 + opiFloat,
+      player.pos.z + Math.cos(player.yaw)*back + ry);
+  }
+  const roll = Math.sin(performance.now()*.0015)*wobble*.08; // алко-крен
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = player.yaw;
+  camera.rotation.x = player.pitch;
+  camera.rotation.z = roll;
+}
+function inDanceZone(){ const z = currentZone(); return z && z.dance; }
+
+// ── Мини-игры употребления: абстрактные жесты ──
+// drink: удерживай ЛКМ; snort: двигай мышью горизонтально при зажатой ЛКМ;
+// pill: удерживай коротко; inject: держи мышь НЕПОДВИЖНО при зажатой ЛКМ.
+const USE_CFG = {
+  drink:{goal:60, lbl:'Пей: держи ЛКМ', mode:'hold'},
+  pill:{goal:35, lbl:'Раскуси и запей: держи ЛКМ', mode:'hold'},
+  snort:{goal:220, lbl:'Дорожка: зажми ЛКМ и веди мышь по линии', mode:'line'},
+  inject:{goal:100, lbl:'Найди вену: держи ЛКМ и НЕ ДЁРГАЙСЯ', mode:'steady'},
+};
+function startUse(id){
+  const s = SUB[id]; if (!s) return;
+  if (S.inv[id]<=0){ toast('Пусто. Найди дилера'); return; }
+  const cfg = USE_CFG[s.method];
+  useGame = {id, cfg, p:0, fail:0};
+  el('usegame').style.display='block';
+  el('usegame').querySelector('.lbl').textContent = cfg.lbl + ` — ${s.icon} ${s.name}`;
+}
+function updateUseGame(dt, mdx, mdy){
+  if (!useGame) return;
+  const g = useGame, tremor = S.crave*2 + S.tox; // тремор мешает
+  if (!mouse.down){ cancelUse(); return; }
+  if (g.cfg.mode==='hold') g.p += dt*55;
+  if (g.cfg.mode==='line') g.p += Math.abs(mdx)* (1 - Math.min(.5,tremor*.2));
+  if (g.cfg.mode==='steady'){
+    const jitter = Math.abs(mdx)+Math.abs(mdy) + tremor*1.5;
+    if (jitter > 6){ g.fail += dt; if (g.fail>.8){ failUse('Сорвал вену — синяк, вещество потеряно'); return; } }
+    else g.p += dt*45;
+  }
+  const pct = Math.min(100, g.p/g.cfg.goal*100);
+  el('usegame').querySelector('.ring').style.setProperty('--p', pct);
+  if (pct>=100){ finishUse(); }
+}
+function finishUse(){
+  const id = useGame.id; useGame = null; el('usegame').style.display='none';
+  if (takeDose(id)){
+    toast(`${SUB[id].icon} ${SUB[id].name} — принято`);
+    if (S.tutorial===2 && id==='meph'){ S.tutorial=3; setTimeout(()=>tutorialSay(), 1200); }
+  }
+}
+function failUse(msg){
+  const id = useGame.id; useGame=null; el('usegame').style.display='none';
+  S.inv[id] = Math.max(0, S.inv[id]-1);
+  S.vibe = Math.max(0, S.vibe-5);
+  toast('🩸 '+msg);
+}
+function cancelUse(){ if(useGame){ useGame=null; el('usegame').style.display='none'; } }
+
+/* ═══ [S8] ВИЗУАЛЬНЫЙ ПАЙПЛАЙН ИНТОКСИКАЦИИ ═════════════════════════════
+   Пост-обработка реализована гибридно: CSS-фильтры на canvas (blur/saturate/
+   hue/contrast — «дёшево и стабильно» на любом бэкенде) + шейдерные эффекты
+   в сцене (пульс ламп, дыхание геометрии) + DOM-оверлеи (калейдоскоп,
+   виньетка тяги, вспышки). drop-shadow даёт хроматическое двоение контуров. */
+function updateVisualFX(){
+  const T = S.settings.trip;
+  const cvs = el('game-canvas');
+  const blur = (S.lvl.alco*3 + S.lvl.opi*1.5) * T;
+  const sat  = 1 + (S.empathy*.9 + S.lvl.psy*.6 + S.lvl.stim*.3) * T - S.lvl.opi*.4*T;
+  const hue  = (S.lvl.psy>0.05 ? Math.sin(performance.now()*.0004)*S.lvl.psy*90 : 0)*T
+             + S.empathy*18*T; // мефедрон греет палитру
+  const con  = 1 + S.lvl.stim*.25*T;
+  const bri  = 1 + S.empathy*.15*T - S.tox*.25;
+  // хроматическое двоение: розовый + голубой призрак контуров
+  const ab = (S.lvl.stim*.5 + S.empathy*.8 + S.lvl.psy*.6)*T;
+  const shadow = ab>.08
+    ? `drop-shadow(${(ab*5).toFixed(1)}px 0 0 rgba(255,46,136,.35)) drop-shadow(${(-ab*5).toFixed(1)}px 0 0 rgba(25,240,255,.3))`
+    : '';
+  cvs.style.filter =
+    `blur(${blur.toFixed(1)}px) saturate(${sat.toFixed(2)}) hue-rotate(${hue.toFixed(0)}deg)`+
+    ` contrast(${con.toFixed(2)}) brightness(${bri.toFixed(2)}) ${shadow}`;
+  el('fx-kaleido').style.opacity = Math.max(0, S.lvl.psy-.35)*1.3*T;
+  el('fx-vignette').style.opacity = Math.max(S.tox*.9, S.lvl.opi*.5);
+  document.documentElement.style.setProperty('--crave', (S.crave>.45?(S.crave-.45)*1.4:0)*T);
+  el('fx-craving').style.opacity = S.crave>.45 ? 1 : 0;
+}
+function fxPowderPuff(){
+  const p = el('fx-powder'); p.style.opacity=.9;
+  setTimeout(()=>p.style.opacity=0, 900);
+}
+function updateSceneFX(dt, t){
+  // лазеры: под психоделиками «дышат» и множатся визуально (масштаб)
+  for (const L of lasers){
+    L.mesh.rotation.z = Math.sin(t*.7 + L.phase) * (0.5 + S.lvl.psy*1.2);
+    L.mesh.material.opacity = .2 + beatPulseT*.3 + S.empathy*.25;
+    L.mesh.scale.x = L.mesh.scale.z = 1 + S.lvl.psy*Math.sin(t*2+L.phase)*.8;
+  }
+  // стробы: синхронизация с пульсом под стимуляторами
+  if (S.settings.strobe){
+    const strobeOn = beatPulseT > .5 || (S.lvl.stim>.6 && Math.random()<S.lvl.stim*.25);
+    for (const s of strobes) s.intensity = strobeOn ? 60 : 0;
+  } else for (const s of strobes) s.intensity = 4;
+  // экран сцены переливается
+  const scr = worldGroup.userData.stage.userData.screen;
+  scr.material.emissive.setHSL((t*.05 + S.lvl.psy*Math.sin(t))%1, .9, .5);
+  scr.material.emissiveIntensity = 1 + beatPulseT*1.5;
+  // дыхание геометрии мира под психоделиками
+  const br = 1 + Math.sin(t*.9)*S.lvl.psy*.025*S.settings.trip;
+  worldGroup.scale.set(br,1,br);
+  // костёр
+  const fire = worldGroup.userData.chill.userData.fire;
+  fire.intensity = 5 + Math.sin(t*11)*2;
+  // бассейн VIP
+  pool.material.emissiveIntensity = 1.4 + Math.sin(t*2)*.6 + S.empathy;
+  // дым дрейфует
+  for (const sm of smokes){ sm.rotation.y += dt*.02; sm.material.opacity = .12 + S.lvl.psy*.1; }
+  beatPulseT = Math.max(0, beatPulseT - dt*6);
+  // толпа танцует (инстансы) — bob в такт, обнимашки при эмпатии
+  const dummy = new THREE.Object3D();
+  const agents = crowd.userData.agents;
+  for (let i=0;i<agents.length;i++){
+    const a = agents[i];
+    const bob = Math.abs(Math.sin(t*a.speed*4 + a.phase))*.4 + beatPulseT*.2;
+    dummy.position.set(a.x, 1.1 + bob, a.z);
+    dummy.rotation.y = Math.sin(t*a.speed + a.phase)*.6;
+    const hugScale = 1 + S.empathy*.08*Math.sin(t*3+a.phase);
+    dummy.scale.setScalar(hugScale);
+    dummy.updateMatrix(); crowd.setMatrixAt(i, dummy.matrix);
+  }
+  crowd.instanceMatrix.needsUpdate = true;
+}
+
+/* ═══ [S9] ИГРОВОЙ ЦИКЛ: ритм, экономика, передоз, сейвы ════════════════ */
+// Ритм-танцы: SPACE в такт на танцполе. Меф даёт «синхронизацию» — окно шире.
+let lastBeatWallT = 0;
+function tryRhythmHit(){
+  if (!inDanceZone()) return;
+  const now = performance.now();
+  const window_ = 130 + S.empathy*110 - (S.crave>.5?60:0); // меф шире, ломка уже
+  const sinceBeat = now - lastBeatWallT;
+  const beatLen = 60000/132/1; // четверти
+  const off = Math.min(sinceBeat % (beatLen), beatLen - sinceBeat % beatLen);
+  if (off < window_){
+    S.combo++;
+    const gain = (1 + S.combo*.15) * (1 + S.empathy*.8);
+    S.vibe = Math.min(100, S.vibe + gain);
+    if (S.combo%8===0) toast(`🔥 Комбо x${S.combo}! Толпа с тобой`);
+    if (S.empathy>.5 && S.combo%5===0){ S.money += 50; toast('💗 Обнимашки → кто-то сунул полтос «на воду»'); }
+  } else { S.combo = 0; }
+  el('comboN').textContent = S.combo;
+  const p = el('rhythm').querySelector('.pulse');
+  p.style.transform = 'scale(1.25)'; p.style.boxShadow = '0 0 24px var(--neon-cyan)';
+  setTimeout(()=>{ p.style.transform='scale(1)'; p.style.boxShadow='none'; }, 90);
+}
+
+// Передоз
+const od = {active:false, mash:0};
+function startOverdose(){
+  od.active = true; od.mash = 0;
+  el('odPanel').classList.add('on');
+  document.exitPointerLock?.();
+  saveGame();
+}
+function updateOverdose(dt){
+  if (!od.active) return;
+  od.mash -= dt*14; // утекает
+  el('odMash').textContent = Math.max(0,od.mash|0) + '%';
+  if (od.mash >= 100){ // спасся сам
+    od.active = false; el('odPanel').classList.remove('on');
+    S.tox = .6; S.vibe = Math.max(5, S.vibe-30);
+    toast('😮‍💨 Отпустило. Больше не мешай столько.');
+    S.tripReports.push('Пережил передоз на ногах');
+  }
+  if (od.mash < -40){ // не справился → медпункт, потеря прогресса части ночи
+    od.active = false; el('odPanel').classList.remove('on');
+    S.tox = .3; S.doses = []; S.lvl = {alco:0,stim:0,psy:0,opi:0}; S.empathy=0;
+    S.vibe = 5; S.money = Math.max(0, S.money - 500);
+    S.gameMin += 60; // потерян час ночи
+    player.pos.set(40,0,90); // очнулся в медпункте
+    toast('🚑 Очнулся в медпункте. Минус час ночи и 500₽.');
+  }
+}
+function callMedic(){
+  if (od.active){
+    od.active=false; el('odPanel').classList.remove('on');
+    S.tox = .35; S.doses=[]; S.lvl={alco:0,stim:0,psy:0,opi:0}; S.empathy=0;
+    S.gameMin += 30; S.money = Math.max(0,S.money-300);
+    player.pos.set(40,0,90);
+    toast('🚑 Медики откачали. -300₽, -полчаса. Живой.');
+  } else if (S.tox>.6){
+    S.tox=.3; S.money=Math.max(0,S.money-300); player.pos.set(40,0,90);
+    toast('🚑 Прокапали в safe tent. -300₽');
+  } else toast('Медик: «Ты в порядке. Пей воду.»');
+}
+
+// Взаимодействие E
+function nearestNPC(){
+  let best=null, bd=4.5;
+  for (const n of npcs){
+    const d = Math.hypot(n.mesh.position.x-player.pos.x, n.mesh.position.z-player.pos.z);
+    if (d<bd){ bd=d; best=n; }
+  }
+  return best;
+}
+function interact(){
+  if (od.active){ od.mash += 9; return; }
+  const n = nearestNPC();
+  if (!n) return;
+  if (n.dealer) openShop(n);
+  else if (n.medic){ callMedic(); }
+  else if (n.troll) openTroll(n);
+  else if (n.raver){
+    if (n.stuck && !n.helped){
+      n.helped = true; S.rep += 5; S.money += 200;
+      toast(`🤝 Помог зависшему (${n.name}): +5 REP, +200₽`);
+    } else if (S.empathy>.4){
+      S.rep += 2; S.vibe = Math.min(100,S.vibe+6);
+      const secrets = ['«Лаборант сидит под люком на юго-востоке»','«У VIP-Химика самое чистое, но нужен REP»','«Розовая дорожка существует. Бункер. Ищи.»'];
+      toast('💗 '+secrets[Math.floor(Math.random()*secrets.length)]);
+      if (!S.contacts.includes('🌸 Пси-фея')) S.contacts.push('🌸 Пси-фея');
+    } else toast(`${n.name}: «Хорошей ночи, бро»`);
+  }
+}
+
+// Магазин дилера
+function openShop(n){
+  if (n.repNeed && S.rep < n.repNeed){
+    toast(`${n.name}: «Тебя тут не знают. Нужно ${n.repNeed} REP»`); return;
+  }
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = n.name;
+  dlg.querySelector('.txt').textContent = n.tutorial && S.tutorial===0
+    ? 'Мяу. Первый раз? Держи пакетик за счёт заведения. Разложи дорожку движением мыши. И запомни, котёнок: ПИК ПРОШЁЛ — НЕ ЧАСТИ. Яма глубже, чем кажется.'
+    : (n.freebie ? 'Сегодня раздаю пробники, налетай.' : 'Чего надо? Быстро.');
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  if (n.tutorial && S.tutorial===0){
+    const b = document.createElement('button'); b.className='opt';
+    b.textContent = '🐾 Взять бесплатный пакетик мефа';
+    b.onclick = ()=>{ S.inv.meph++; S.tutorial=1; closeDialog(); tutorialSay(); };
+    opts.appendChild(b);
+  }
+  for (const id of n.stock){
+    const s = SUB[id];
+    if (S.settings.alcoOnly && s.ch!=='alco' && s.ch!=='aid') continue;
+    const price = Math.round(s.price * (n.priceMul||1) * (n.pure?1:1));
+    const b = document.createElement('button'); b.className='opt';
+    b.innerHTML = `${s.icon} ${s.name}${n.pure?' <small>(чистый)</small>':''}<span class="price">₽${n.freebie&&id==='meph'?0:price}</span>`;
+    b.onclick = ()=>{
+      const cost = (n.freebie && id==='meph') ? 0 : price;
+      if (S.money < cost){ toast('Не хватает денег'); return; }
+      S.money -= cost; S.inv[id]++;
+      if (n.freebie) n.freebie = false;
+      if (!S.contacts.includes(n.name)) S.contacts.push(n.name);
+      toast(`Купил: ${s.name}`);
+    };
+    opts.appendChild(b);
+  }
+  // мини-поручение — заработок
+  if (!n.legalOnly && !n.medic){
+    const b = document.createElement('button'); b.className='opt';
+    b.textContent = '📦 «Есть работа?» (отнести пакет — +300₽, +8 REP)';
+    b.onclick = ()=>{ closeDialog(); startCourier(n); };
+    opts.appendChild(b);
+  }
+  const x = document.createElement('button'); x.className='opt'; x.textContent='Уйти';
+  x.onclick = closeDialog; opts.appendChild(x);
+}
+let courier = null;
+function startCourier(from){
+  const targets = npcs.filter(n=>n.raver);
+  courier = {target: targets[Math.floor(Math.random()*targets.length)]};
+  toast(`📦 Найди «${courier.target.name}» и передай пакет (E рядом)`);
+}
+function checkCourier(){
+  if (!courier) return;
+  const t = courier.target;
+  if (Math.hypot(t.mesh.position.x-player.pos.x, t.mesh.position.z-player.pos.z) < 4){
+    S.money += 300; S.rep += 8; courier = null;
+    toast('📦 Доставлено: +300₽, +8 REP');
+  }
+}
+function openTroll(n){
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = '🧌 Передозный тролль';
+  dlg.querySelector('.txt').textContent = '«Слабак. Настоящие герои закидываются ВСЕМ СРАЗУ. Вот, бесплатно. Ну что, слабо?»';
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  const a = document.createElement('button'); a.className='opt danger';
+  a.textContent = '💀 Принять «подарок» (не надо)';
+  a.onclick = ()=>{ closeDialog(); S.tox = 1.1; toast('Идиотская идея.'); };
+  const b = document.createElement('button'); b.className='opt';
+  b.textContent = '🖕 Послать тролля (+3 REP)';
+  b.onclick = ()=>{ closeDialog(); S.rep+=3; toast('Толпа одобрительно загудела: +3 REP'); };
+  opts.appendChild(a); opts.appendChild(b);
+}
+function closeDialog(){ el('dialog').classList.remove('on'); lockPointer(); }
+
+// Пасхалка: розовая дорожка в бункере при высоком REP
+let pinkSpawned = false;
+function checkPinkLine(){
+  if (pinkSpawned || S.rep < 25) return;
+  const z = ZONES[1];
+  if (Math.hypot(player.pos.x-z.x, player.pos.z-z.z) < 12){
+    pinkSpawned = true; S.inv.pinkline = 1;
+    toast('🌸 На кейсе в бункере — ЛЕГЕНДАРНАЯ РОЗОВАЯ ДОРОЖКА. Она твоя.');
+    S.tripReports.push('Нашёл розовую дорожку');
+  }
+}
+
+// Туториал от кота
+function tutorialSay(){
+  const lines = [
+    null,
+    '🐱 «Теперь слот 2 (клавиша 2) и ЛКМ — веди мышь ровно по линии. Мурр.»',
+    null,
+    '🐱 «Чувствуешь тепло? Это пик. Танцуй (SPACE в такт), обнимайся, лови вайб. Когда накроет яма — НЕ ЧАСТИ. Вода. Дыши. Пик не вернётся, вернётся токсичность.»',
+  ];
+  if (S.tutorial===1){ toast(lines[1]); S.tutorial=2; }
+  else if (S.tutorial===3){ toast(lines[3]); S.tutorial=4; }
+}
+
+// Финал ночи: рассвет в 06:00
+let ended = false;
+function checkDawn(){
+  if (ended || S.gameMin < 420) return; // 7 часов * 60
+  ended = true;
+  const enlightened = S.vibe > 65 && S.tox < .5;
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = '🌅 06:00 — РАССВЕТ';
+  dlg.querySelector('.txt').textContent = enlightened
+    ? `Небо порозовело. Ты стоишь посреди редеющей толпы — уставший, живой, просветлённый. Вайб: ${S.vibe|0}. Трип-репортов собрано: ${S.tripReports.length}. Ночь прожита до дна.`
+    : `Ты встречаешь рассвет в полуотключке на пуфе в чилл-зоне. Голова гудит, тяга скребёт. Вайб: ${S.vibe|0}. Может, в следующий раз — аккуратнее.`;
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  const b = document.createElement('button'); b.className='opt'; b.textContent='Начать новую ночь';
+  b.onclick = ()=>{ localStorage.removeItem('neontrip'); location.reload(); };
+  opts.appendChild(b);
+}
+
+// Сохранение
+function saveGame(){
+  try{
+    const {started,paused,...rest} = S;
+    localStorage.setItem('neontrip', JSON.stringify({
+      money:S.money, rep:S.rep, vibe:S.vibe, tox:S.tox, inv:S.inv, gameMin:S.gameMin,
+      mephTol:S.mephTol, crave:S.crave, log:S.log, contacts:S.contacts,
+      tripReports:S.tripReports, tutorial:S.tutorial, settings:S.settings,
+      pos:[player.pos.x,player.pos.y,player.pos.z],
+    }));
+  }catch(e){}
+}
+function loadGame(){
+  try{
+    const d = JSON.parse(localStorage.getItem('neontrip'));
+    if (!d) return false;
+    Object.assign(S, {money:d.money, rep:d.rep, vibe:d.vibe, tox:d.tox, inv:d.inv,
+      gameMin:d.gameMin, mephTol:d.mephTol, crave:d.crave, log:d.log,
+      contacts:d.contacts, tripReports:d.tripReports, tutorial:d.tutorial});
+    if (d.settings) Object.assign(S.settings, d.settings);
+    if (d.pos) player.pos.set(...d.pos);
+    return true;
+  }catch(e){ return false; }
+}
+
+/* ═══ [S10] UI / ВВОД / ГЛАВНЫЙ ЦИКЛ ════════════════════════════════════ */
+const el = id => document.getElementById(id);
+function toast(msg){
+  const t = document.createElement('div'); t.className='toast'; t.textContent=msg;
+  el('toasts').appendChild(t); setTimeout(()=>t.remove(), 4000);
+}
+function fmtClock(min){
+  const total = (23*60 + min) % (24*60);
+  return String(Math.floor(total/60)).padStart(2,'0')+':'+String(total%60|0).padStart(2,'0');
+}
+function updateHUD(){
+  el('b-vibe').querySelector('i').style.width = S.vibe+'%';
+  el('b-tox').querySelector('i').style.width = Math.min(100,S.tox*100)+'%';
+  el('b-alco').querySelector('i').style.width = Math.min(100,S.lvl.alco*100)+'%';
+  el('b-stim').querySelector('i').style.width = Math.min(100,S.lvl.stim*100)+'%';
+  el('b-psy').querySelector('i').style.width = Math.min(100,S.lvl.psy*100)+'%';
+  el('b-opi').querySelector('i').style.width = Math.min(100,S.lvl.opi*100)+'%';
+  el('b-crave').querySelector('i').style.width = S.crave*100+'%';
+  el('b-crave').classList.toggle('blink', S.crave>.6);
+  el('stMoney').textContent = S.money;
+  el('stRep').textContent = S.rep;
+  el('stTol').textContent = S.mephTol>0.05 ? `толерантность к мефу ${(S.mephTol*100)|0}%` : '';
+  el('clock').textContent = fmtClock(S.gameMin);
+  const z = currentZone(); el('zone-label').textContent = z ? z.name : 'ТЕРРИТОРИЯ';
+  el('rhythm').style.display = inDanceZone() ? 'block' : 'none';
+  // хотбар
+  const hb = el('hotbar');
+  if (!hb.children.length)
+    HOTBAR.forEach((id,i)=>{
+      const d = document.createElement('div'); d.className='slot';
+      d.innerHTML = `<span class="k">${i+1}</span>${SUB[id].icon}<span class="n"></span>`;
+      hb.appendChild(d);
+    });
+  HOTBAR.forEach((id,i)=>{
+    const d = hb.children[i];
+    d.classList.toggle('sel', S.slot===i);
+    d.querySelector('.n').textContent = S.inv[id]||0;
+    d.style.opacity = S.inv[id]>0 ? 1 : .4;
+  });
+  // подсказка взаимодействия
+  const n = nearestNPC(), hint = el('interact-hint');
+  if (n && !el('dialog').classList.contains('on')){
+    hint.style.display='block';
+    hint.textContent = `[E] ${n.name}` + (n.dealer?' — торговля':'') + (n.medic?' — помощь':'');
+  } else hint.style.display='none';
+}
+function updatePhone(){
+  const dv = el('phDoses'); dv.innerHTML='';
+  for (const d of S.doses){
+    const s = SUB[d.id], [lv,ph] = doseCurve(d, S.gameMin);
+    const left = Math.max(0, s.dur - (S.gameMin-d.t0))|0;
+    dv.innerHTML += `<div class="dose-row"><span>${s.icon} ${s.name} · ${{up:'▲ приход',peak:'★ пик',down:'▼ спад'}[ph]||''}</span><span class="t">~${left}м</span></div>`;
+  }
+  if (!S.doses.length) dv.innerHTML = '<div style="font-size:12px;color:#556">трезвость...</div>';
+  el('phLog').innerHTML = S.log.slice(-8).reverse().join('<br>');
+  el('phContacts').innerHTML = S.contacts.map(c=>`<div class="contact">${c}</div>`).join('');
+  el('phHarm').innerHTML = S.settings.harm
+    ? `Пей воду каждые 30 мин.<br>Меф: пик прошёл — пауза минимум ${(SUB.meph.dur*.8)|0}м.<br>Не мешай стимы с алкоголем.<br>Плохо → H, медики не сдают.`
+    : 'HR-режим выключен.';
+}
+function drawMap(){
+  const c = el('mapCanvas'), ctx2 = c.getContext('2d');
+  ctx2.fillStyle = '#02020a'; ctx2.fillRect(0,0,512,512);
+  const sx = v => (v+300)/600*512, sz = v => (v+300)/600*512;
+  for (const z of ZONES){
+    ctx2.beginPath(); ctx2.arc(sx(z.x), sz(z.z), z.r/600*512, 0, 7);
+    ctx2.strokeStyle = z.c; ctx2.stroke();
+    ctx2.fillStyle = z.c; ctx2.font='10px sans-serif'; ctx2.textAlign='center';
+    ctx2.fillText(z.name, sx(z.x), sz(z.z));
+  }
+  ctx2.fillStyle = '#fff'; ctx2.beginPath();
+  ctx2.arc(sx(player.pos.x), sz(player.pos.z), 5, 0, 7); ctx2.fill();
+  ctx2.fillText('ТЫ', sx(player.pos.x), sz(player.pos.z)-9);
+  el('setlist').innerHTML = '<b>СЕТЫ:</b> 23:00 Warm-up · 00:30 Acid Witch · 02:00 KOTA (меф-час) · 03:30 Bunker B2B · 05:00 Sunrise Ambient';
+}
+
+// ── Ввод ──
+const mouse = {down:false, dx:0, dy:0};
+const joy = {lx:0, ly:0, rx:0, ry:0};
+addEventListener('keydown', e=>{
+  keys[e.code] = true;
+  if (!S.started) return;
+  if (e.code==='Escape'){ togglePause(); }
+  if (S.paused || od.active){ if (e.code==='KeyE' && od.active) interact(); if(e.code==='KeyH') callMedic(); return; }
+  if (e.code==='KeyE') interact();
+  if (e.code==='KeyF'){ el('phone').classList.toggle('on'); if(el('phone').classList.contains('on')){updatePhone(); document.exitPointerLock?.();} else lockPointer(); }
+  if (e.code==='Tab'){ e.preventDefault(); el('mapPanel').classList.toggle('on'); if(el('mapPanel').classList.contains('on')){drawMap(); document.exitPointerLock?.();} else lockPointer(); }
+  if (e.code==='KeyV'){ S.camMode = S.camMode===3?1:3; }
+  if (e.code==='KeyH') callMedic();
+  if (e.code==='Space' && inDanceZone()) tryRhythmHit();
+  const num = parseInt(e.code.replace('Digit',''));
+  if (num>=1 && num<=6){ S.slot = num-1; }
+});
+addEventListener('keyup', e=>{ keys[e.code]=false; });
+let lockUnavailable = false; // фолбэк: среды без pointer lock (iframe и т.п.)
+addEventListener('mousedown', e=>{
+  if (!S.started || S.paused) return;
+  if (e.button===0 && !anyPanelOpen()){
+    if (document.pointerLockElement !== document.body && !lockUnavailable){
+      lockPointer();
+      setTimeout(()=>{ if (document.pointerLockElement !== document.body) lockUnavailable = true; }, 400);
+      return;
+    }
+    mouse.down = true;
+    startUse(HOTBAR[S.slot]);
+  }
+});
+addEventListener('mouseup', ()=>{ mouse.down=false; });
+addEventListener('mousemove', e=>{
+  if (document.pointerLockElement === document.body){
+    const sens = .0022;
+    player.yaw   -= e.movementX*sens;
+    player.pitch = THREE.MathUtils.clamp(player.pitch - e.movementY*sens, -1.4, 1.4);
+    mouse.dx = e.movementX; mouse.dy = e.movementY;
+  }
+});
+function anyPanelOpen(){
+  return ['phone','mapPanel','dialog','pause','odPanel'].some(id=>el(id).classList.contains('on'));
+}
+function lockPointer(){
+  if (!('ontouchstart' in window) && !anyPanelOpen()) document.body.requestPointerLock?.();
+}
+function togglePause(){
+  if (anyPanelOpen() && !el('pause').classList.contains('on')){
+    ['phone','mapPanel','dialog'].forEach(id=>el(id).classList.remove('on'));
+    lockPointer(); return;
+  }
+  S.paused = !S.paused;
+  el('pause').classList.toggle('on', S.paused);
+  if (S.paused) document.exitPointerLock?.(); else lockPointer();
+}
+
+// мобильные джойстики (плавная деградация для тача)
+if ('ontouchstart' in window){
+  document.body.classList.add('touch');
+  const bind = (elm, cb) => {
+    let id=null, cx=0, cy=0;
+    elm.addEventListener('touchstart', e=>{ const t=e.changedTouches[0]; id=t.identifier; cx=t.clientX; cy=t.clientY; });
+    elm.addEventListener('touchmove', e=>{
+      for (const t of e.changedTouches) if (t.identifier===id)
+        cb(THREE.MathUtils.clamp((t.clientX-cx)/40,-1,1), THREE.MathUtils.clamp((t.clientY-cy)/40,-1,1));
+    });
+    elm.addEventListener('touchend', ()=>{ id=null; cb(0,0); });
+  };
+  bind(el('joyL'), (x,y)=>{ joy.lx=x; joy.ly=y; });
+  bind(el('joyR'), (x,y)=>{ player.yaw -= x*.06; player.pitch = THREE.MathUtils.clamp(player.pitch - y*.04,-1.4,1.4); });
+}
+
+// Настройки паузы
+el('setStrobe').onchange = e=>{ S.settings.strobe = e.target.checked; saveGame(); };
+el('setTrip').oninput = e=>{ S.settings.trip = e.target.value/100; saveGame(); };
+el('setAlcoOnly').onchange = e=>{ S.settings.alcoOnly = e.target.checked; saveGame(); };
+el('setHarm').onchange = e=>{ S.settings.harm = e.target.checked; saveGame(); };
+el('setVol').oninput = e=>{ S.settings.vol = e.target.value/100; audio.setVol(S.settings.vol); saveGame(); };
+el('btnResume').onclick = togglePause;
+el('btnReset').onclick = ()=>{ localStorage.removeItem('neontrip'); location.reload(); };
+
+// ── Старт ──
+async function boot(fromSave){
+  el('start').style.display = 'none';
+  try{
+    // WebGPURenderer: авто-фолбэк на WebGL2, высокий DPI, полноэкранность по клику
+    renderer = new THREE.WebGPURenderer({canvas: el('game-canvas'), antialias:true});
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    await renderer.init();
+  }catch(err){
+    el('errbox').style.display='flex';
+    el('errbox').textContent = 'Не удалось инициализировать WebGPU/WebGL: '+err.message;
+    return;
+  }
+  await buildWorld();
+  buildPlayer(el('cOutfit').value, el('cHair').value);
+  S.camMode = parseInt(el('cCam').value);
+  spawnNPCs();
+  if (fromSave) loadGame();
+  S.started = true;
+  el('hud').classList.add('on');
+  audio.init();
+  lockPointer();
+  toast(fromSave ? '↩ Ночь продолжается...' : '🎪 23:00. Ворота открыты. Начни с бара — или найди кота.');
+  clock = new THREE.Clock();
+  renderer.setAnimationLoop(loop);
+  // периодический автосейв
+  setInterval(()=>{ if(S.started && !S.dead) saveGame(); }, 15000);
+}
+el('btnStart').onclick = ()=>boot(false);
+el('btnContinue').onclick = ()=>boot(true);
+if (localStorage.getItem('neontrip')) el('btnContinue').style.display='inline-block';
+// отладочные хуки (безопасны в проде)
+window.__dbg = ()=>({inv:S.inv, lvl:S.lvl, doses:S.doses.length, tox:S.tox,
+  pos:[player.pos.x|0, player.pos.z|0], zone:currentZone()?.name});
+window.__take = id=>takeDose(id);
+window.__tp = (x,z)=>player.pos.set(x,0,z);
+addEventListener('resize', ()=>{
+  if (!renderer) return;
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ── Главный цикл ──
+let fpsAcc=0, fpsN=0, lowPerf=false;
+function loop(){
+  const dt = Math.min(clock.getDelta(), .1);
+  const t = clock.elapsedTime;
+  // slow-mo под опиатами: замедляем игровое время восприятия
+  const timeMul = 1 - S.lvl.opi*.45;
+  if (!S.paused && !od.active){
+    const dtGameMin = dt * TIME_SCALE / 60 * timeMul;
+    S.gameMin += dtGameMin;
+    updateChemistry(dtGameMin);
+    updatePlayer(dt*timeMul);
+    updateNPCs(dt*timeMul);
+    updateEvents(dt);
+    updateUseGame(dt, mouse.dx, mouse.dy);
+    updateSceneFX(dt, t);
+    checkCourier(); checkPinkLine(); checkDawn();
+    // танцпол пассивно капает вайб под чем-то
+    if (inDanceZone() && (S.lvl.stim>.2 || S.lvl.psy>.2)) S.vibe = Math.min(100, S.vibe + dt*.6);
+  }
+  updateOverdose(dt);
+  updateVisualFX();
+  updateHUD();
+  audio.update();
+  audio.heartbeat(Math.min(1, S.lvl.stim*.7 + S.tox*.8));
+  mouse.dx = mouse.dy = 0;
+  // адаптивная деградация: при просадке FPS гасим pixelRatio
+  fpsAcc += dt; fpsN++;
+  if (fpsAcc > 2){
+    const fps = fpsN/fpsAcc; fpsAcc=0; fpsN=0;
+    if (fps < 45 && !lowPerf){ lowPerf=true; renderer.setPixelRatio(1); }
+  }
+  renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
