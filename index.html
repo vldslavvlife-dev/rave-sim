@@ -55,6 +55,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;
   radial-gradient(circle at 50% 50%,rgba(255,120,200,.25) 0 6%,transparent 7% 12%,
   rgba(255,180,80,.18) 13% 16%,transparent 17% 24%,rgba(120,255,180,.15) 25% 27%,transparent 28%);
   animation:mandalaBreath 5s ease-in-out infinite}
+/* бэд-трип: гниющая зелёно-бурая палитра, наступающая темнота, дрожь */
+#fx-badtrip{mix-blend-mode:multiply;background:
+  radial-gradient(ellipse at center,rgba(60,80,30,.5) 0%,rgba(30,10,20,.9) 60%,rgba(0,0,0,.98) 100%);
+  animation:badPulse 3.2s ease-in-out infinite}
+@keyframes badPulse{0%,100%{filter:hue-rotate(0deg)}50%{filter:hue-rotate(-40deg) contrast(1.3)}}
 @keyframes mandalaBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.25)}}
 #fx-powder{background:radial-gradient(ellipse at 50% 100%,rgba(255,150,190,.5) 0%,transparent 55%)}
 #fx-heartbeat{box-shadow:inset 0 0 220px rgba(255,0,0,.55)}
@@ -277,6 +282,7 @@ body.touch #crosshair{display:none}
 <!-- оверлеи трипа -->
 <div id="fx-kaleido" class="fx"></div>
 <div id="fx-mandala" class="fx"></div>
+<div id="fx-badtrip" class="fx"></div>
 <div id="fx-powder" class="fx"></div>
 <div id="fx-vignette" class="fx"></div>
 <div id="fx-craving" class="fx"></div>
@@ -423,9 +429,10 @@ const SUB = {
   water:     {icon:'💧', name:'Вода',        ch:'aid',  onset:0,  peak:1,  dur:1,   pow:0,   tox:-.08,price:100,  method:'drink'},
   antidote:  {icon:'🧪', name:'Антидот',     ch:'aid',  onset:0,  peak:1,  dur:1,   pow:0,   tox:-.35,price:1200, method:'drink'},
   pinkline:  {icon:'🌸', name:'Розовая дорожка', ch:'stim', onset:2, peak:25, dur:110, pow:1.3, tox:.10, price:0, method:'snort', empath:1.4, crave:.5, legend:1},
+  strip:     {icon:'🧫', name:'Тест-полоска', ch:'tool', onset:0, peak:1, dur:1, pow:0, tox:0, price:200, method:'tool'},
 };
 const HOTBAR_DEFAULT = ['beer','meph','mdma','ket','water','antidote'];
-const isIllegal = id => { const c = SUB[id].ch; return c!=='alco' && c!=='aid'; };
+const isIllegal = id => { const c = SUB[id].ch; return c!=='alco' && c!=='aid' && c!=='tool'; };
 
 // Состояние игрока / ночи
 const S = {
@@ -433,7 +440,9 @@ const S = {
   money:1500, rep:0, vibe:30, tox:0,
   lvl:{alco:0, stim:0, psy:0, opi:0}, empathy:0,
   crave:0, mephTol:0, doses:[], log:[],
-  inv:{beer:2, meph:0, coke:0, mdma:0, lsd:0, ket:0, her:0, water:1, antidote:0, vodka:0, cocktail:0, pinkline:0},
+  inv:{beer:2, meph:0, coke:0, mdma:0, lsd:0, ket:0, her:0, water:1, antidote:0, vodka:0, cocktail:0, pinkline:0, strip:0},
+  badtrip:0, tested:{}, // уровень бэд-трипа (0..1) и проверенная чистота стаффа
+  dirtyBatch:null, dirtyBatchT:0, // активная «грязная партия» ночи (канал)
   slot:0, gameMin:0, // минут с 23:00
   heat:0, hotbar:[...HOTBAR_DEFAULT], // «палево» и настраиваемый хотбар
   contacts:['🐱 Мяу-дилер (главный танцпол)'],
@@ -501,7 +510,11 @@ function takeDose(id, opts={}){
   S.inv[id]--;
   S.stats.doses++; S.stats.uniq[id] = true; // статистика для челленджей
   saveGame(); // автосейв перед каждым приёмом мефа и вообще любой дозы
-  const quality = opts.quality ?? (0.7 + Math.random()*0.3); // примеси
+  // Грязная партия ночи: если вещество попало под неё и не проверено — брак
+  const inDirty = S.dirtyBatch && (S.dirtyBatch==='all' || s.ch===S.dirtyBatch) && S.tested[id]!=='clean';
+  const quality = opts.quality ?? (inDirty ? 0.3+Math.random()*0.2 : 0.7 + Math.random()*0.3);
+  if (inDirty){ toast('🤢 Дрянь! Вещество из грязной партии — накрыло не тем'); S.badtrip = Math.min(1, S.badtrip+.3); }
+  delete S.tested[id]; // проверка одноразовая
   const tolMul = s.crave ? Math.max(.4, 1 - S.mephTol*.5) : 1;
   S.doses.push({id, t0:S.gameMin, q:quality*tolMul, iv:s.method==='inject'});
   S.log.push(`${fmtClock(S.gameMin)} — ${s.name}${quality<.8?' (грязный)':''}`);
@@ -513,6 +526,16 @@ function takeDose(id, opts={}){
     serotoninStorm();                                       // секретный трип
   }
   S.tox = Math.max(0, Math.min(1.2, S.tox + tox));
+  // СЕТ И СЕТТИНГ: психоделики в «жёстких» зонах могут увести в бэд-трип
+  if (s.ch==='psy'){
+    const z = currentZone();
+    const harsh = z && (z.name==='ТЕХНО-БУНКЕР' || z.name==='ПОДЗЕМНЫЙ УРОВЕНЬ');
+    const badRisk = (harsh?.35:.08) + S.tox*.3 + quality<.7*0 + (quality<.7?.25:0);
+    if (Math.random() < badRisk) startBadTrip();
+    else if (harsh) toast('🌀 Тёмное место для психоделика... держи голову');
+  }
+  // даунеры/диссо и вода гасят бэд-трип
+  if (s.ch==='opi' || id==='water' || id==='antidote') S.badtrip = Math.max(0, S.badtrip - (id==='antidote'?.6:.35));
   if (s.crave){ S.crave = 0; S.mephTol = Math.min(1, S.mephTol + .12); }
   if (s.ch==='aid' && s.tox<0) toast(id==='water'?'💧 Полегчало':'🧪 Токсичность сбита');
   // ПАЛЕВО: употребление нелегального на виду. В safe-зонах почти не палит,
@@ -568,6 +591,24 @@ function busted(){
   S.stats.busts++; S.stats.cleanNight = false;
   S.vibe = Math.max(0, S.vibe - 25);
   saveGame();
+}
+
+// БЭД-ТРИП: отдельный режим ужаса. Гаснет со временем и от даунеров/чилла/воды.
+function startBadTrip(){
+  if (S.badtrip > .5) return; // уже плохо
+  S.badtrip = Math.max(S.badtrip, .85);
+  toast('🌀😱 БЭД-ТРИП! Мир поплыл во тьму. Дойди до ЧИЛЛ-ЗОНЫ или медика, выпей воды/даунер');
+  S.tripReports.push('Пережил бэд-трип');
+}
+function updateBadTrip(dtMin){
+  if (S.badtrip<=0) return;
+  const z = currentZone();
+  // чилл-зона и медпункт «заземляют», вода/даунеры гасят (в takeDose)
+  let heal = .006;
+  if (z && (z.name==='ЧИЛЛ-ЗОНА' || z.name==='МЕДПУНКТ')) heal = .05;
+  S.badtrip = Math.max(0, S.badtrip - dtMin*heal);
+  S.vibe = Math.max(0, S.vibe - dtMin*.15);
+  if (S.badtrip < .02) toast('😮‍💨 Отпустило. Ты выбрался из бэд-трипа.');
 }
 
 function serotoninStorm(){
@@ -1223,13 +1264,13 @@ function spawnNPCs(){
   addNPC({x:-94, z:-62, name:'Технарь', dealer:true, color:0x552266,
     stock:['coke','meph','ket','lsd'], priceMul:.9, repNeed:0});
   addNPC({x:95, z:-58, name:'VIP-Химик', dealer:true, color:0xccaa22,
-    stock:['coke','mdma','lsd','antidote'], priceMul:1.4, repNeed:20, pure:true});
+    stock:['coke','mdma','lsd','antidote','strip'], priceMul:1.4, repNeed:20, pure:true});
   addNPC({x:110, z:-106, name:'Лаборант', dealer:true, color:0x336633,
     stock:['her','ket','meph','antidote'], priceMul:.8, repNeed:35, secret:true});
   addNPC({x:-54, z:32, name:'Тип из кабинки', dealer:true, color:0x445566,
     stock:['meph','coke'], priceMul:1.1});
   addNPC({x:61, z:26, name:'Бармен', dealer:true, color:0x228855,
-    stock:['beer','vodka','cocktail','water'], priceMul:1, legalOnly:true});
+    stock:['beer','vodka','cocktail','water','strip'], priceMul:1, legalOnly:true});
   addNPC({x:31, z:58, name:'Медик', medic:true, color:0xeeeeee});
   addNPC({x:106, z:-100, name:'Передозный тролль', troll:true, color:0x113311});
   // Патруль «в штатском»: ходят по открытым зонам, при палеве ≥70 — погоня,
@@ -1432,10 +1473,20 @@ function updateEvents(dt){
   nextEventT -= dt;
   if (nextEventT>0) return;
   nextEventT = 100 + Math.random()*80;
+  // грязная партия истекает сама
+  if (S.dirtyBatch && (S.gameMin - S.dirtyBatchT) > 90){ S.dirtyBatch = null; }
   const roll = Math.random();
-  if (roll<.35){
+  if (roll<.30){
     toast('💗 Волна кайфа прошла по толпе — массовые обнимашки!');
     S.vibe = Math.min(100, S.vibe+8);
+  } else if (roll<.42 && !S.dirtyBatch){
+    // ГРЯЗНАЯ ПАРТИЯ: по фесту пошёл брак, NPC массово отъезжают
+    const chans = ['stim','psy','stim']; S.dirtyBatch = chans[Math.floor(Math.random()*chans.length)];
+    S.dirtyBatchT = S.gameMin;
+    const names = {stim:'порошков', psy:'марок/таблеток'};
+    toast(`☣️ ТРЕВОГА: по фесту гуляет ГРЯЗНАЯ ПАРТИЯ ${names[S.dirtyBatch]}! Проверяй стафф тест-полоской`);
+    // несколько рейверов уходят в «отъезд»
+    npcs.filter(n=>n.raver).slice(0,5).forEach(n=>{ n.cycle = 40; });
   } else if (roll<.6){
     toast('🚻 Шёпот: в туалетах раздают пробники...');
     const wc = npcs.find(n=>n.name==='Тип из кабинки'); if (wc) wc.freebie = true;
@@ -1540,10 +1591,34 @@ const USE_CFG = {
 function startUse(id){
   const s = SUB[id]; if (!s) return;
   if (S.inv[id]<=0){ toast('Пусто. Найди дилера'); return; }
+  // тест-полоска (harm reduction): проверить чистоту стаффа в соседнем слоте
+  if (s.method==='tool'){ useTestStrip(); return; }
+  // HR: предупреждение о токсичности микса ДО приёма (можно отпустить кнопку)
+  if (S.settings.harm && isIllegal(id)){
+    let proj = s.tox;
+    if (s.ch==='stim' && S.lvl.alco>.3) proj*=1.6;
+    if (s.ch==='opi'  && S.lvl.alco>.3) proj*=1.8;
+    if (S.tox + proj > .8) toast(`⚠ HR: это добавит ~${Math.round(proj*100)}% токса, ты на ${Math.round(S.tox*100)}%. Близко к передозу!`);
+    else if (s.tested==='dirty' || S.tested[id]==='dirty') toast('⚠ HR: полоска показала грязь. Точно принимаешь?');
+  }
   const cfg = USE_CFG[s.method];
   useGame = {id, cfg, p:0, fail:0};
   el('usegame').style.display='block';
   el('usegame').querySelector('.lbl').textContent = cfg.lbl + ` — ${s.icon} ${s.name}`;
+}
+// Тест-полоска: проверяет чистоту первого нелегального вещества в хотбаре.
+// Раскрывает, попало ли оно в «грязную партию» ночи.
+function useTestStrip(){
+  if (S.inv.strip<=0){ toast('Нет тест-полосок'); return; }
+  const target = S.hotbar.map(id=>id).find(id=>isIllegal(id) && S.inv[id]>0)
+    || Object.keys(S.inv).find(id=>isIllegal(id) && S.inv[id]>0);
+  if (!target){ toast('🧫 Нечего проверять — нет нелегального стаффа'); return; }
+  S.inv.strip--;
+  const dirty = S.dirtyBatch && (S.dirtyBatch==='all' || SUB[target].ch===S.dirtyBatch);
+  S.tested[target] = dirty ? 'dirty' : 'clean';
+  if (dirty) toast(`🧫☠️ ${SUB[target].name}: ГРЯЗЬ! Опасные примеси — лучше слить`);
+  else toast(`🧫✅ ${SUB[target].name}: чисто. Можно принимать`);
+  saveGame();
 }
 function updateUseGame(dt, mdx, mdy){
   if (!useGame) return;
@@ -1594,17 +1669,20 @@ function updateVisualFX(){
   const hue  = (S.lvl.psy>0.05 ? Math.sin(performance.now()*.0004)*S.lvl.psy*90 : 0)*T
              + S.empathy*18*T; // мефедрон греет палитру
   const con  = 1 + S.lvl.stim*.25*T;
-  const bri  = 1 + S.empathy*.15*T - S.tox*.25;
+  const bri  = 1 + S.empathy*.15*T - S.tox*.25 - S.badtrip*.35;
+  // бэд-трип уводит палитру в гнилой зелёно-бурый и добавляет дрожь
+  const badHue = S.badtrip * -70;
   // хроматическое двоение: розовый + голубой призрак контуров
-  const ab = (S.lvl.stim*.5 + S.empathy*.8 + S.lvl.psy*.6)*T;
+  const ab = (S.lvl.stim*.5 + S.empathy*.8 + S.lvl.psy*.6 + S.badtrip*.9)*T;
   const shadow = ab>.08
     ? `drop-shadow(${(ab*5).toFixed(1)}px 0 0 rgba(255,46,136,.35)) drop-shadow(${(-ab*5).toFixed(1)}px 0 0 rgba(25,240,255,.3))`
     : '';
   cvs.style.filter =
-    `blur(${blur.toFixed(1)}px) saturate(${sat.toFixed(2)}) hue-rotate(${hue.toFixed(0)}deg)`+
-    ` contrast(${con.toFixed(2)}) brightness(${bri.toFixed(2)}) ${shadow}`;
+    `blur(${(blur+S.badtrip*1.5).toFixed(1)}px) saturate(${(sat*(1-S.badtrip*.5)).toFixed(2)}) hue-rotate(${(hue+badHue).toFixed(0)}deg)`+
+    ` contrast(${(con+S.badtrip*.4).toFixed(2)}) brightness(${bri.toFixed(2)}) ${shadow}`;
   el('fx-kaleido').style.opacity = Math.max(0, S.lvl.psy-.35)*1.3*T;
   el('fx-vignette').style.opacity = Math.max(S.tox*.9, S.lvl.opi*.5);
+  el('fx-badtrip').style.opacity = S.badtrip*T;
   document.documentElement.style.setProperty('--crave', (S.crave>.45?(S.crave-.45)*1.4:0)*T);
   el('fx-craving').style.opacity = S.crave>.45 ? 1 : 0;
 }
@@ -1972,6 +2050,7 @@ function saveGame(){
       money:S.money, rep:S.rep, vibe:S.vibe, tox:S.tox, inv:S.inv, gameMin:S.gameMin,
       mephTol:S.mephTol, crave:S.crave, log:S.log, contacts:S.contacts,
       heat:S.heat, hotbar:S.hotbar, night:S.night, stats:S.stats, challenges:S.challenges,
+      badtrip:S.badtrip, dirtyBatch:S.dirtyBatch, dirtyBatchT:S.dirtyBatchT,
       tripReports:S.tripReports, tutorial:S.tutorial, settings:S.settings,
       pos:[player.pos.x,player.pos.y,player.pos.z],
     }));
@@ -1997,6 +2076,9 @@ function loadGame(){
       contacts:d.contacts, tripReports:d.tripReports, tutorial:d.tutorial});
     if (typeof d.heat === 'number') S.heat = d.heat;
     if (typeof d.night === 'number') S.night = d.night;
+    if (typeof d.badtrip === 'number') S.badtrip = d.badtrip;
+    if (d.dirtyBatch!==undefined) S.dirtyBatch = d.dirtyBatch;
+    if (typeof d.dirtyBatchT === 'number') S.dirtyBatchT = d.dirtyBatchT;
     if (d.stats) Object.assign(S.stats, d.stats);
     if (d.challenges) S.challenges = d.challenges;
     if (Array.isArray(d.hotbar) && d.hotbar.every(id=>SUB[id])) S.hotbar = d.hotbar;
@@ -2081,7 +2163,7 @@ function updatePhone(){
   el('phLog').innerHTML = S.log.slice(-8).reverse().join('<br>');
   el('phContacts').innerHTML = S.contacts.map(c=>`<div class="contact">${c}</div>`).join('');
   el('phHarm').innerHTML = S.settings.harm
-    ? `Пей воду каждые 30 мин.<br>Меф: пик прошёл — пауза минимум ${(SUB.meph.dur*.8)|0}м.<br>Не мешай стимы с алкоголем.<br>Плохо → H, медики не сдают.<br><b>Патруль (🕶):</b> употребление/сделки в открытых зонах поднимают ПАЛЕВО. ≥70 — за тобой идут. Пунктирные зоны на карте (туалеты, бункер, VIP, чилл, подземка) — там тихо и палево спадает.`
+    ? `Пей воду каждые 30 мин.<br>Меф: пик прошёл — пауза минимум ${(SUB.meph.dur*.8)|0}м.<br>Не мешай стимы с алкоголем.<br>🧫 Проверяй стафф тест-полоской — особенно в «грязную партию».<br>🌀 Психоделики в бункере/подземке рискуют бэд-трипом; накрыло — иди в чилл-зону/медпункт, пей воду или прими даунер.<br>Плохо → H, медики не сдают.<br><b>Патруль (🕶):</b> употребление/сделки в открытых зонах поднимают ПАЛЕВО. ≥70 — за тобой идут. Пунктирные зоны на карте (туалеты, бункер, VIP, чилл, подземка) — там тихо и палево спадает.`
     : 'HR-режим выключен.';
 }
 /* ── Навигация: вейпоинт (клик по карте), стрелка-компас, миникарта ── */
@@ -2395,6 +2477,9 @@ window.__give = (id,n=1)=>{ S.inv[id]=(S.inv[id]||0)+n; };
 window.__social = ()=>npcs.filter(n=>n.task).map(n=>`${n.name}:${n.task.type}`);
 window.__S = S;
 window.__jumpDawn = ()=>{ S.gameMin = 420; checkDawn(); };
+window.__dirty = (ch='stim')=>{ S.dirtyBatch = ch; S.dirtyBatchT = S.gameMin; };
+window.__bad = ()=>startBadTrip();
+window.__strip = ()=>useTestStrip();
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -2413,6 +2498,7 @@ function loop(){
     S.gameMin += dtGameMin;
     updateChemistry(dtGameMin);
     updateHeat(dtGameMin);
+    updateBadTrip(dtGameMin);
     updatePlayer(dt*timeMul);
     updateNPCs(dt*timeMul);
     updateSocial(dt);
