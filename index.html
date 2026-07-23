@@ -340,7 +340,7 @@ body.touch #joyL,body.touch #joyR{display:block}
   <button class="bigbtn ghost" id="btnContinue" style="display:none">Продолжить сохранённую ночь</button>
   <div class="ctl">WASD — движение · SHIFT — бег · SPACE — прыжок/ритм · E — взаимодействие · ЛКМ — принять вещество<br>
   1-6 — хотбар · I — инвентарь · F — телефон · TAB — карта · V — камера · H — медик · ESC — пауза<br>
-  Маркеры: 💊 дилер · 🐱 кот-наставник · ➕ медик · ❗ нужна помощь · 💬 поболтать · 🕶 ПАТРУЛЬ — не пались рядом</div>
+  Маркеры: 💊 дилер · 🐱 кот-наставник · ➕ медик · ❗ нужна помощь · 💬 поболтать · 🧟 дикий торчок (грабит!) · 🕶 патруль · 🚨 ПОГОНЯ</div>
 </div></div>
 
 <div id="joyL"><div class="knob"></div></div>
@@ -1092,6 +1092,7 @@ function markerFor(def){
   if (def.medic)  return '➕';
   if (def.guard)  return '🕶';
   if (def.troll)  return '☠️';
+  if (def.junkie) return '🧟';
   if (def.stuck)  return '❗';
   if (def.raver)  return '💬';
   return null;
@@ -1101,12 +1102,26 @@ function addNPC(def){
   mesh.position.set(def.x, 0, def.z);
   if (def.mascot){ mesh.scale.setScalar(1.25); mesh.userData.body.material.emissive = new THREE.Color(0xff88cc); mesh.userData.body.material.emissiveIntensity=.4; }
   const mk = markerFor(def);
-  let marker = null;
+  let marker = null, alert = null;
   if (mk){ marker = makeMarker(mk); mesh.add(marker); }
+  if (def.guard){ alert = makeMarker('🚨'); alert.visible = false; mesh.add(alert); }
   worldGroup.add(mesh);
-  const npc = {...def, mesh, marker, cool:0, cycle:Math.random()*100};
+  const npc = {...def, mesh, marker, alert, cool:0, cycle:Math.random()*100};
   npcs.push(npc); return npc;
 }
+// вспомогалки для NPC-логики
+function stepToward(m, tx, tz, sp, dt){
+  const dx = tx-m.position.x, dz = tz-m.position.z, d = Math.hypot(dx,dz)||1;
+  m.position.x += dx/d*sp*dt; m.position.z += dz/d*sp*dt;
+  m.rotation.y = Math.atan2(dx,dz);
+  return d;
+}
+const angNorm = a => Math.atan2(Math.sin(a), Math.cos(a));
+function zoneAt(x,z){
+  for (const zn of ZONES){ const dx=x-zn.x, dz=z-zn.z; if (dx*dx+dz*dz < zn.r*zn.r) return zn; }
+  return null;
+}
+const playerDistTo = n => Math.hypot(n.mesh.position.x-player.pos.x, n.mesh.position.z-player.pos.z);
 function spawnNPCs(){
   // Дилеры по зонам
   addNPC({x:4, z:-12, name:'Мяу-дилер 🐱', dealer:true, mascot:true, color:0xffc0e0,
@@ -1123,12 +1138,19 @@ function spawnNPCs(){
     stock:['beer','vodka','cocktail','water'], priceMul:1, legalOnly:true});
   addNPC({x:31, z:58, name:'Медик', medic:true, color:0xeeeeee});
   addNPC({x:106, z:-100, name:'Передозный тролль', troll:true, color:0x113311});
-  // Патруль «в штатском»: ходят по открытым зонам, при палеве ≥70 — погоня
+  // Патруль «в штатском»: ходят по открытым зонам, при палеве ≥70 — погоня,
+  // а если ВИДЯТ сам акт употребления — погоня начинается сразу
   const patrolZones = ZONES.filter(z=>!z.safe);
   for (let i=0;i<3;i++){
     const z = patrolZones[i % patrolZones.length];
     addNPC({x:z.x+10, z:z.z+10, name:'Патруль (в штатском)', guard:true,
-      color:0x21263a, hair:0x111111, wp:null});
+      color:0x21263a, hair:0x111111, wp:null, chase:0});
+  }
+  // Дикие торчки: шатаются по тёмным углам, ломятся к игроку за стаффом.
+  // Догнали — ограбят. Можно откупиться, поделиться дозой или оттолкнуть.
+  for (const [jx,jz] of [[100,-96],[-88,-56],[-50,44],[16,-68]]){
+    addNPC({x:jx, z:jz, name:'Дикий торчок', junkie:true,
+      color:0x4a5540, hair:0x333322});
   }
   // Обычные рейверы с циклами употребления (ищут→принимают→пикуют→отъезжают)
   for (let i=0;i<14;i++){
@@ -1147,7 +1169,19 @@ function updateNPCs(dt){
     if (n.guard){
       const dx = player.pos.x-m.position.x, dz = player.pos.z-m.position.z;
       const d = Math.hypot(dx,dz);
-      const chasing = S.heat>=70 && d<60 && !currentZone()?.safe;
+      // ЗРЕНИЕ: конус ~130°, 24 м. Если патруль видит сам акт употребления
+      // нелегального в открытой зоне — немедленная погоня + всплеск палева.
+      if (n.chase<=0 && useGame && isIllegal(useGame.id) && d<24 && !currentZone()?.safe){
+        const aTo = Math.atan2(dx,dz);
+        if (Math.abs(angNorm(aTo - m.rotation.y)) < 1.15){
+          n.chase = 9; addHeat(45);
+          toast('👮 «ЭЙ! А ну СТОЯТЬ!» — патруль засёк тебя с поличным');
+        }
+      }
+      if (n.chase>0) n.chase -= dt;
+      const chasing = (S.heat>=70 || n.chase>0) && d<60 && !currentZone()?.safe;
+      if (n.marker) n.marker.visible = !chasing;
+      if (n.alert)  n.alert.visible  = chasing;
       if (chasing){
         if (!n.wasChasing){ n.wasChasing=true; toast('👮 ЗА ТОБОЙ ИДУТ! Отрывайся или ныряй в safe-зону'); }
         const sp = 7.5; // быстрее шага, медленнее бега — шанс уйти есть
@@ -1170,6 +1204,49 @@ function updateNPCs(dt){
       }
       continue;
     }
+    // ── Дикий торчок: охотится за стаффом/деньгами игрока ──
+    if (n.junkie){
+      if (n.cool>0) n.cool -= dt;
+      if (n.task?.type==='flee'){
+        n.task.t -= dt;
+        stepToward(m, m.position.x*2-player.pos.x, m.position.z*2-player.pos.z, 8, dt);
+        if (n.task.t<=0) n.task = null;
+        continue;
+      }
+      const d = playerDistTo(n);
+      const loot = S.money>=100 || Object.keys(S.inv).some(id=>isIllegal(id)&&S.inv[id]>0);
+      if (!n.calmed && n.cool<=0 && d<15 && loot && !anyPanelOpen()){
+        if (!n.hunting && d<14){ n.hunting=true; toast('🧟 «Брат... брат, поделись... БРАТ!» — к тебе ломится дикий торчок'); }
+        stepToward(m, player.pos.x, player.pos.z, 6.8, dt);
+        m.rotation.z = Math.sin(n.cycle*8)*.12; // трясёт на бегу
+        if (d<1.9){ n.catchT=(n.catchT||0)+dt; if (n.catchT>.8){ n.catchT=0; n.hunting=false; junkieRob(n); } }
+        else n.catchT = 0;
+      } else {
+        n.hunting = false;
+        m.position.x += Math.sin(n.cycle*.7)*dt*1.2;
+        m.position.z += Math.cos(n.cycle*.9)*dt*1.2;
+        m.rotation.z = Math.sin(n.cycle*2)*.15; // шатает
+      }
+      continue;
+    }
+    // ── Задача от социального движка важнее обычного цикла ──
+    if (n.raver && n.task){
+      const T = n.task;
+      if (T.type==='goto'){
+        if (stepToward(m, T.x, T.z, T.sp||3, dt) < 2.2) n.task = T.next || null;
+      } else if (T.type==='pause'){
+        T.t -= dt; m.rotation.z = 0;
+        if (T.t<=0) n.task = T.next || null;
+      } else if (T.type==='spin'){ // обнимашки-кружение
+        T.t -= dt; m.rotation.y += dt*6;
+        m.position.y = Math.abs(Math.sin(n.cycle*8))*.3;
+        if (T.t<=0){ n.task = null; m.position.y = 0; }
+      } else if (T.type==='flee'){
+        T.t -= dt; stepToward(m, T.x, T.z, 6, dt);
+        if (T.t<=0) n.task = null;
+      } else n.task = null;
+      continue;
+    }
     if (n.raver){
       // цикл: seek → use → peak → crash → seek...
       const t = n.cycle % 60;
@@ -1189,6 +1266,72 @@ function updateNPCs(dt){
     }
   }
 }
+/* ── Социальный движок: NPC взаимодействуют друг с другом ──
+   Каждые несколько секунд назначается сценка: рейвер идёт затариваться к
+   дилеру и уходит «занюхивать» в туалеты; двое кружатся в обнимашках;
+   торчок доканывает рейвера; патруль винтит упоротого и ведёт к выходу. */
+let socialT = 6;
+function updateSocial(dt){
+  socialT -= dt; if (socialT>0) return;
+  socialT = 4 + Math.random()*5;
+  const ravers = npcs.filter(n=>n.raver && !n.task);
+  if (ravers.length<2) return;
+  const pick = arr => arr[Math.floor(Math.random()*arr.length)];
+  const roll = Math.random();
+  if (roll < .32){ // покупка у дилера → в туалеты «поправиться»
+    const r = pick(ravers);
+    const dl = pick(npcs.filter(n=>n.dealer && !n.legalOnly));
+    const wcz = ZONES.find(z=>z.name==='ТУАЛЕТЫ');
+    r.task = {type:'goto', x:dl.mesh.position.x+2, z:dl.mesh.position.z+2,
+      next:{type:'pause', t:2.5,
+      next:{type:'goto', x:wcz.x+rnd(-6,6), z:wcz.z+rnd(-6,6), sp:4,
+      next:{type:'pause', t:4}}}};
+    if (playerDistTo(r)<25 || playerDistTo(dl)<25)
+      toast(`💸 ${r.name} пошёл затариваться у «${dl.name}»`);
+  } else if (roll < .60){ // обнимашки двоих
+    const a = pick(ravers);
+    const distA = x => Math.hypot(x.mesh.position.x-a.mesh.position.x, x.mesh.position.z-a.mesh.position.z);
+    const near = ravers.filter(x=>x!==a).sort((x,y)=>distA(x)-distA(y))[0];
+    if (near){
+      a.task = {type:'goto', x:near.mesh.position.x, z:near.mesh.position.z,
+        next:{type:'spin', t:3.5}};
+      near.task = {type:'spin', t:5};
+      if (playerDistTo(a)<22) toast(`💗 ${a.name} и ${near.name} слились в обнимашках`);
+    }
+  } else if (roll < .82){ // торчок докапывается — рейвер сваливает
+    const j = pick(npcs.filter(n=>n.junkie && !n.task));
+    const r = pick(ravers);
+    if (j && r){
+      j.mesh.position.set(r.mesh.position.x+rnd(-4,4), 0, r.mesh.position.z+rnd(-4,4));
+      r.task = {type:'flee', t:3.5, x:r.mesh.position.x+rnd(-28,28), z:r.mesh.position.z+rnd(-28,28)};
+      if (playerDistTo(r)<26) toast(`🧟 Торчок докопался до «${r.name}» — тот сваливает`);
+    }
+  } else { // патруль принял упоротого NPC
+    const open = ravers.filter(x=>!zoneAt(x.mesh.position.x, x.mesh.position.z)?.safe);
+    const r = pick(open.length ? open : ravers);
+    const ent2 = ZONES.find(z=>z.name==='ВХОД');
+    r.task = {type:'pause', t:2.5,
+      next:{type:'goto', x:ent2.x+rnd(-5,5), z:ent2.z, sp:2.5,
+      next:{type:'pause', t:8}}};
+    if (playerDistTo(r)<28) toast(`👮 Патруль принял «${r.name}» — повели к выходу`);
+  }
+}
+// Грабёж диким торчком: тащит дозу или деньги, потом сваливает
+function junkieRob(n){
+  n.cool = 30;
+  const stash = Object.keys(S.inv).filter(id=>S.inv[id]>0 && isIllegal(id));
+  if (stash.length && Math.random()<.6){
+    const id = stash[Math.floor(Math.random()*stash.length)];
+    S.inv[id]--; toast(`🧟 Торчок ВЫРВАЛ у тебя ${SUB[id].icon} ${SUB[id].name} и дал дёру!`);
+  } else if (S.money>0){
+    const amt = Math.min(S.money, 150); S.money -= amt;
+    toast(`🧟 Торчок выхватил ₽${amt} и растворился в темноте`);
+  } else toast('🧟 Торчок обшарил тебя — пусто. Плюнул и ушёл.');
+  n.task = {type:'flee', t:4};
+  S.vibe = Math.max(0, S.vibe-4);
+  saveGame();
+}
+
 // Динамические события
 let nextEventT = 90;
 function updateEvents(dt){
@@ -1205,6 +1348,13 @@ function updateEvents(dt){
   } else if (roll<.8 && S.lvl.psy>.3){
     toast('🪞 В зеркале мелькнул дилер-призрак... или показалось');
     S.tripReports.push('Дилер-призрак в зеркале');
+  } else if (roll<.9){
+    // буйный торчок врывается на танцпол
+    const j = npcs.find(n=>n.junkie);
+    if (j){ const dz2 = ZONES[0];
+      j.mesh.position.set(dz2.x+rnd(-10,10), 0, dz2.z+rnd(-10,10)); j.cool = 0;
+      toast('🧟 ДИКИЙ ТОРЧОК ВОРВАЛСЯ НА ТАНЦПОЛ — держи карманы!');
+    }
   } else {
     toast('🎧 Диджей врубил новый сет — толпа взорвалась');
   }
@@ -1496,6 +1646,7 @@ function interact(){
   if (n.guard){ toast('🕶 «Всё в порядке?» Кивни и иди дальше.'); addHeat(S.lvl.psy>.5||S.lvl.opi>.5 ? 12 : 0); return; }
   if (n.dealer) openShop(n);
   else if (n.medic){ callMedic(); }
+  else if (n.junkie) openJunkie(n);
   else if (n.troll) openTroll(n);
   else if (n.raver){
     if (n.stuck && !n.helped){
@@ -1572,6 +1723,48 @@ function checkCourier(){
     toast('📦 Доставлено: +300₽, +8 REP');
   }
 }
+// Диалог с диким торчком: поделиться, откупиться, оттолкнуть
+function openJunkie(n){
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = '🧟 Дикий торчок';
+  dlg.querySelector('.txt').textContent = n.calmed
+    ? '«Брат... ты святой. Я всё помню. Спрашивай что хочешь.»'
+    : '«Браааат... трясёт всего... поделись, а? ПОДЕЛИСЬ! Или хоть на дозу дай...»';
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  const stash = Object.keys(S.inv).filter(id=>S.inv[id]>0 && isIllegal(id));
+  if (!n.calmed && stash.length){
+    const b = document.createElement('button'); b.className='opt';
+    b.textContent = `🤲 Поделиться дозой (${SUB[stash[0]].name}) — +6 REP, он запомнит`;
+    b.onclick = ()=>{
+      S.inv[stash[0]]--; n.calmed = true; S.rep += 6; closeDialog();
+      const secrets = ['«Лаборант под люком барыжит чистым... скажи, что от Хромого»',
+        '«В бункере на кейсе видел РОЗОВУЮ дорожку. Не вру!»',
+        '«Патруль меняется у бара. Пока меняются — слепые»'];
+      toast('🧟 '+secrets[Math.floor(Math.random()*secrets.length)]);
+      S.tripReports.push('Успокоил дикого торчка');
+    };
+    opts.appendChild(b);
+  }
+  if (!n.calmed && S.money>=100){
+    const b = document.createElement('button'); b.className='opt';
+    b.textContent = '💸 Дать ₽100 — отстанет на время';
+    b.onclick = ()=>{ S.money -= 100; n.cool = 60; closeDialog(); toast('🧟 «Брат... святой...» — убрёл в темноту'); };
+    opts.appendChild(b);
+  }
+  if (!n.calmed){
+    const b = document.createElement('button'); b.className='opt danger';
+    b.textContent = '🖐 Оттолкнуть (может завопить)';
+    b.onclick = ()=>{
+      n.cool = 12; closeDialog(); S.vibe = Math.max(0,S.vibe-2);
+      if (Math.random()<.4){ addHeat(8); toast('🧟 «ПОМОГИТЕ! ГРАБЯТ!» — заорал на всю площадь. Палево +'); }
+      else toast('Торчок отлетел и потерял интерес');
+    };
+    opts.appendChild(b);
+  }
+  const x = document.createElement('button'); x.className='opt'; x.textContent='Уйти';
+  x.onclick = closeDialog; opts.appendChild(x);
+}
+
 function openTroll(n){
   const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
   dlg.querySelector('.who').textContent = '🧌 Передозный тролль';
@@ -1710,7 +1903,8 @@ function updateHUD(){
     hint.style.display='block';
     hint.textContent = n.guard
       ? '🕶 Патруль. Лучше пройти мимо'
-      : `[E] ${n.name}` + (n.dealer?' — торговля':'') + (n.medic?' — помощь':'') + (n.stuck&&!n.helped?' — нужна помощь':'');
+      : `[E] ${n.name}` + (n.dealer?' — торговля':'') + (n.medic?' — помощь':'')
+        + (n.junkie?' — ОСТОРОЖНО, может ограбить':'') + (n.stuck&&!n.helped?' — нужна помощь':'');
   } else hint.style.display='none';
 }
 function updatePhone(){
@@ -1968,6 +2162,8 @@ window.__dbg = ()=>({inv:S.inv, lvl:S.lvl, doses:S.doses.length, tox:S.tox, heat
 window.__take = id=>takeDose(id);
 window.__tp = (x,z)=>player.pos.set(x,0,z);
 window.__heat = v=>addHeat(v);
+window.__give = (id,n=1)=>{ S.inv[id]=(S.inv[id]||0)+n; };
+window.__social = ()=>npcs.filter(n=>n.task).map(n=>`${n.name}:${n.task.type}`);
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -1988,6 +2184,7 @@ function loop(){
     updateHeat(dtGameMin);
     updatePlayer(dt*timeMul);
     updateNPCs(dt*timeMul);
+    updateSocial(dt);
     updateEvents(dt);
     updateUseGame(dt, mouse.dx, mouse.dy);
     updateSceneFX(dt, t);
