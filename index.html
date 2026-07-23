@@ -443,6 +443,7 @@ const S = {
   inv:{beer:2, meph:0, coke:0, mdma:0, lsd:0, ket:0, her:0, water:1, antidote:0, vodka:0, cocktail:0, pinkline:0, strip:0},
   badtrip:0, tested:{}, // уровень бэд-трипа (0..1) и проверенная чистота стаффа
   dirtyBatch:null, dirtyBatchT:0, // активная «грязная партия» ночи (канал)
+  shiftBlind:0, // до какой игровой минуты патруль слеп (пересменка)
   slot:0, gameMin:0, // минут с 23:00
   heat:0, hotbar:[...HOTBAR_DEFAULT], // «палево» и настраиваемый хотбар
   contacts:['🐱 Мяу-дилер (главный танцпол)'],
@@ -580,17 +581,127 @@ function nearestGuardDist(){
   }
   return bd;
 }
-function busted(){
+function hasStash(){ return Object.keys(S.inv).some(id=>isIllegal(id) && S.inv[id]>0); }
+// ОБЫСК: тебя догнали. Не всегда сразу винтят — есть выбор.
+let searchOpen = false;
+function searchEncounter(fromRaid){
+  if (searchOpen || od.active || ditch) return;
+  searchOpen = true;
+  const dlg = el('dialog'); dlg.classList.add('on'); document.exitPointerLock?.();
+  dlg.querySelector('.who').textContent = '👮 Патруль: «Стоять. Обыск.»';
+  dlg.querySelector('.txt').textContent = hasStash()
+    ? '«Выворачивай карманы. Или мы сами посмотрим.» Сердце колотится — что делать?'
+    : '«Так, что у нас тут... » — карманы пустые, но нервы на пределе.';
+  const opts = dlg.querySelector('.opts'); opts.innerHTML='';
+  // 1) Скинуть стафф — быстрая реакция
+  if (hasStash()){
+    const b = document.createElement('button'); b.className='opt';
+    b.textContent = '🤞 Скинуть стафф незаметно (реакция)';
+    b.onclick = ()=>{ closeSearch(); startDitch(); };
+    opts.appendChild(b);
+  }
+  // 2) Подкуп — зависит от денег и репутации
+  const bribe = Math.max(400, 1500 - S.rep*20);
+  if (S.money >= bribe){
+    const b = document.createElement('button'); b.className='opt';
+    b.innerHTML = `💵 Сунуть взятку <span class="price">₽${bribe}</span>`;
+    b.onclick = ()=>{
+      closeSearch();
+      // не тому патрульному = резко хуже; шанс зависит от REP
+      if (Math.random() < Math.min(.9, .4 + S.rep*.02)){
+        statMoney(-bribe); S.heat = Math.max(0, S.heat-40);
+        toast('💵 «...ничего не видел.» Патруль отвернулся. Пронесло.');
+      } else {
+        addHeat(30); toast('💵 Не тот патрульный! «ТЫ ЧТО, СУЁШЬ?!» — стало только хуже');
+        setTimeout(()=>searchEncounter(false), 900);
+      }
+    };
+    opts.appendChild(b);
+  }
+  // 3) Сдаться — обыск и изъятие (мягче полного задержания)
+  const c = document.createElement('button'); c.className='opt danger';
+  c.textContent = hasStash() ? '🙌 Дать себя обыскать (изымут стафф)' : '🙌 Спокойно дать обыскать';
+  c.onclick = ()=>{ closeSearch(); busted(hasStash() ? 'search' : 'clean'); };
+  opts.appendChild(c);
+}
+function closeSearch(){ searchOpen=false; el('dialog').classList.remove('on'); lockPointer(); }
+function busted(kind){
   let seized = 0;
   for (const id in S.inv) if (isIllegal(id)){ seized += S.inv[id]; S.inv[id] = 0; }
-  const fine = Math.min(S.money, 1000);
-  S.money -= fine; S.heat = 0; S.gameMin += 50;
-  player.pos.set(0,0,92); // выкинули к воротам
-  toast(`👮 Приняли. Штраф ₽${fine}, изъято ${seized} шт, потерян почти час. Скажи спасибо, что не увезли.`);
+  if (kind==='clean'){ // чистого отпускают с миром
+    S.heat = Math.max(0, S.heat-50);
+    toast('👮 «Свободен. В следующий раз не бегай.» Обыскали — пусто, отпустили.');
+    saveGame(); return;
+  }
+  const light = kind==='search'; // обыск с изъятием мягче полного винта
+  const fine = Math.min(S.money, light?500:1000);
+  S.money -= fine; S.heat = 0; S.gameMin += light?25:50;
+  player.pos.set(30,0,60); // отвели в safe tent / к воротам
+  toast(`👮 ${light?'Обыскали':'Приняли'}. Штраф ₽${fine}, изъято ${seized} шт, ${light?'-полчаса':'потерян почти час'}.`);
   S.tripReports.push('Задержание патрулём');
   S.stats.busts++; S.stats.cleanNight = false;
-  S.vibe = Math.max(0, S.vibe - 25);
+  S.vibe = Math.max(0, S.vibe - (light?12:25));
   saveGame();
+}
+// Мини-игра «скинуть стафф»: успей нажать/тапнуть N раз за 2.2с
+let ditch = null;
+function startDitch(){
+  ditch = {t:2.2, hits:0, need:6};
+  el('odPanel').classList.add('on');
+  el('odPanel').querySelector('h2').textContent = 'СКИНЬ СТАФФ!';
+  el('odPanel').querySelector('.sub').innerHTML = 'Жми <b>E</b> / кнопку — вырони всё нелегальное, пока не заметили!';
+  document.exitPointerLock?.();
+}
+function updateDitch(dt){
+  if (!ditch) return;
+  ditch.t -= dt;
+  el('odMash').textContent = Math.max(0, ditch.need - ditch.hits) + ' осталось';
+  if (ditch.hits >= ditch.need){ // успел — стафф выброшен, ты «чист»
+    ditch = null; endDitchPanel();
+    let dropped=0; for (const id in S.inv) if (isIllegal(id)){ dropped+=S.inv[id]; S.inv[id]=0; }
+    S.heat = Math.max(0, S.heat-45);
+    toast(`🌿 Скинул ${dropped} шт в темноту. Обыск — пусто. «Свободен.»`);
+    saveGame();
+  } else if (ditch.t <= 0){ // не успел — полный обыск
+    ditch = null; endDitchPanel();
+    busted('search');
+  }
+}
+function endDitchPanel(){
+  el('odPanel').classList.remove('on');
+  el('odPanel').querySelector('h2').textContent = 'ПЕРЕДОЗ';
+  el('odPanel').querySelector('.sub').innerHTML = 'Сердце срывается. Жми <b>E</b> (или кнопку) изо всех сил, либо <b>H</b> — вызвать медика!';
+  lockPointer();
+}
+
+/* ── РЕЙД (облава) и ПЕРЕСМЕНКА ──
+   Раз за ночь патруль устраивает облаву: сирена, все стягиваются к одной
+   зоне, толпа разбегается, надо добежать до safe-зоны. Пересменка — окно,
+   когда патруль слеп (у бара). */
+const raid = {active:false, t:0, zone:null};
+function startRaid(){
+  if (raid.active) return;
+  raid.zone = ZONES.filter(z=>!z.safe)[Math.floor(Math.random()*3)] || ZONES[0];
+  raid.active = true; raid.t = 30;
+  el('fx-flash').style.opacity = .6; setTimeout(()=>el('fx-flash').style.opacity=0, 200);
+  toast('🚨🚨 ОБЛАВА! Патруль зачищает зону — беги в safe-зону (пунктир на карте), 30 сек!');
+  audio.punch();
+}
+function updateRaid(dt){
+  if (S.shiftBlind && S.shiftBlind <= S.gameMin){ S.shiftBlind = 0; toast('👮 Пересменка кончилась — патруль снова в деле'); }
+  if (!raid.active) return;
+  raid.t -= dt;
+  if (currentZone()?.safe){ // добежал
+    raid.active = false;
+    toast('😮‍💨 Успел в safe-зону. Облава прошла мимо.');
+  } else if (raid.t <= 0){
+    raid.active = false;
+    toast('🚨 Облава схлынула.');
+  }
+}
+function triggerShiftChange(){
+  S.shiftBlind = S.gameMin + 15; // ~15 игровых минут слепоты
+  toast('🕶💤 Патруль меняется у бара — сейчас они слепые. Успей провернуть дела!');
 }
 
 // БЭД-ТРИП: отдельный режим ужаса. Гаснет со временем и от даунеров/чилла/воды.
@@ -1304,6 +1415,23 @@ function updateNPCs(dt){
     if (n.guard){
       const dx = player.pos.x-m.position.x, dz = player.pos.z-m.position.z;
       const d = Math.hypot(dx,dz);
+      const blind = S.shiftBlind > S.gameMin; // слепое окно пересменки
+      // ПЕРЕСМЕНКА: патруль стягивается к бару и «слепнет»
+      if (blind){
+        if (n.marker) n.marker.visible = true; if (n.alert) n.alert.visible = false;
+        n.wasChasing = false; n.catchT = 0; n.chase = 0;
+        const bar = ZONES.find(z=>z.name==='БАР');
+        stepToward(m, bar.x+rnd(-4,4), bar.z+rnd(-4,4), 3, dt);
+        continue;
+      }
+      // РЕЙД: во время облавы патруль ломит к центру целевой зоны
+      if (raid.active){
+        const chasingR = d<70;
+        if (n.marker) n.marker.visible=false; if (n.alert) n.alert.visible=true;
+        stepToward(m, player.pos.x, player.pos.z, 8.2, dt);
+        if (d<2.5){ n.catchT=(n.catchT||0)+dt; if (n.catchT>1){ n.catchT=0; searchEncounter(true); } } else n.catchT=0;
+        continue;
+      }
       // ЗРЕНИЕ: конус ~130°, 24 м. Если патруль видит сам акт употребления
       // нелегального в открытой зоне — немедленная погоня + всплеск палева.
       if (n.chase<=0 && useGame && isIllegal(useGame.id) && d<24 && !currentZone()?.safe){
@@ -1322,7 +1450,7 @@ function updateNPCs(dt){
         const sp = 7.5; // быстрее шага, медленнее бега — шанс уйти есть
         m.position.x += dx/d*sp*dt; m.position.z += dz/d*sp*dt;
         m.rotation.y = Math.atan2(dx,dz);
-        if (d<2.5){ n.catchT=(n.catchT||0)+dt; if (n.catchT>1.2){ n.catchT=0; busted(); } }
+        if (d<2.5){ n.catchT=(n.catchT||0)+dt; if (n.catchT>1.2){ n.catchT=0; searchEncounter(false); } }
         else n.catchT=0;
       } else {
         n.wasChasing = false; n.catchT = 0;
@@ -1493,6 +1621,10 @@ function updateEvents(dt){
   } else if (roll<.8 && S.lvl.psy>.3){
     toast('🪞 В зеркале мелькнул дилер-призрак... или показалось');
     S.tripReports.push('Дилер-призрак в зеркале');
+  } else if (roll<.72 && S.gameMin>60 && !raid.active){
+    startRaid(); // облава
+  } else if (roll<.82 && !S.shiftBlind){
+    triggerShiftChange(); // слепое окно пересменки
   } else if (roll<.9){
     // буйный торчок врывается на танцпол
     const j = npcs.find(n=>n.junkie);
@@ -1831,7 +1963,10 @@ function nearestNPC(){
   }
   return best;
 }
+// Быстрое нажатие в оверлеях: передоз ИЛИ мини-игра «скинь стафф»
+function panelMash(){ if (ditch){ ditch.hits++; } else if (od.active){ od.mash += 9; } }
 function interact(){
+  if (ditch){ ditch.hits++; return; }
   if (od.active){ od.mash += 9; return; }
   const n = nearestNPC();
   if (!n) return;
@@ -2284,6 +2419,7 @@ addEventListener('keydown', e=>{
   keys[e.code] = true;
   if (!S.started) return;
   if (e.code==='Escape'){ togglePause(); }
+  if (ditch){ if (e.code==='KeyE') panelMash(); return; } // мини-игра «скинь стафф»
   if (S.paused || od.active){ if (e.code==='KeyE' && od.active) interact(); if(e.code==='KeyH') callMedic(); return; }
   if (e.code==='KeyE') interact();
   if (e.code==='KeyF'){ el('phone').classList.toggle('on'); if(el('phone').classList.contains('on')){updatePhone(); document.exitPointerLock?.();} else lockPointer(); }
@@ -2375,7 +2511,7 @@ if (TOUCH){
   press(el('tbUse'),
     ()=>{ if (S.started && !S.paused && !anyPanelOpen()){ mouse.down = true; startUse(S.hotbar[S.slot]); } },
     ()=>{ mouse.down = false; });
-  press(el('tbAct'), ()=>{ if (od.active){ od.mash += 9; return; } if (S.started && !S.paused) interact(); });
+  press(el('tbAct'), ()=>{ if (ditch){ panelMash(); return; } if (od.active){ od.mash += 9; return; } if (S.started && !S.paused) interact(); });
   press(el('tbJump'), ()=>{
     if (!S.started || S.paused) return;
     if (inDanceZone()) tryRhythmHit();
@@ -2394,7 +2530,7 @@ if (TOUCH){
   }
 }
 // Кнопка «ЖМИ!» в передозе — и для мыши, и для тача
-el('odBtn').addEventListener('click', ()=>{ if (od.active) od.mash += 9; });
+el('odBtn').addEventListener('click', ()=>{ panelMash(); });
 // Тап по фону панели закрывает её (кроме передоза и паузы)
 for (const pid of ['phone','mapPanel','invPanel','dialog']){
   el(pid).addEventListener('click', e=>{
@@ -2480,6 +2616,10 @@ window.__jumpDawn = ()=>{ S.gameMin = 420; checkDawn(); };
 window.__dirty = (ch='stim')=>{ S.dirtyBatch = ch; S.dirtyBatchT = S.gameMin; };
 window.__bad = ()=>startBadTrip();
 window.__strip = ()=>useTestStrip();
+window.__raid = ()=>startRaid();
+window.__shift = ()=>triggerShiftChange();
+window.__search = ()=>searchEncounter(false);
+window.__ditch = ()=>{ if(ditch) return ditch; };
 addEventListener('resize', ()=>{
   if (!renderer) return;
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -2499,6 +2639,8 @@ function loop(){
     updateChemistry(dtGameMin);
     updateHeat(dtGameMin);
     updateBadTrip(dtGameMin);
+    updateRaid(dt);
+    updateDitch(dt);
     updatePlayer(dt*timeMul);
     updateNPCs(dt*timeMul);
     updateSocial(dt);
