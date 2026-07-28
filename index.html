@@ -413,7 +413,6 @@ body.touch #crosshair{display:none}
 import * as THREE from 'three';
 import { pass } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
-import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 
 /* ═══ [S3] ХИМИЧЕСКИЙ ДВИЖОК ══════════════════════════════════════════════
    Каждое вещество: канал воздействия, кривая (onset→peak→dur, в игровых
@@ -3090,7 +3089,7 @@ function setupPostFX(){
     const color = scenePass.getTextureNode();
     // высокий порог: светятся только яркие неоновые источники, не вся сцена
     bloomPass = bloom(color, 0.55, 0.45, 0.75); // strength, radius, threshold
-    postFX.outputNode = fxaa(color.add(bloomPass));
+    postFX.outputNode = color.add(bloomPass);
   }catch(err){
     console.warn('PostFX недоступен, играем без bloom:', err);
     postFX = null; S.settings.bloom = false;
