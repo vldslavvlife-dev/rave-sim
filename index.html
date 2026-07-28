@@ -363,6 +363,7 @@ body.touch #crosshair{display:none}
 <!-- Пауза -->
 <div id="pause" class="panel"><div class="body">
   <h2>ПАУЗА</h2>
+  <div class="setrow"><span>Bloom (свечение неона)</span><input type="checkbox" id="setBloom" checked></div>
   <div class="setrow"><span>Стробоскопы</span><input type="checkbox" id="setStrobe" checked></div>
   <div class="setrow"><span>Интенсивность трипа</span><input type="range" id="setTrip" min="0" max="100" value="100"></div>
   <div class="setrow"><span>Режим «только алкоголь»</span><input type="checkbox" id="setAlcoOnly"></div>
@@ -410,6 +411,9 @@ body.touch #crosshair{display:none}
 
 <script type="module">
 import * as THREE from 'three';
+import { pass } from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 
 /* ═══ [S3] ХИМИЧЕСКИЙ ДВИЖОК ══════════════════════════════════════════════
    Каждое вещество: канал воздействия, кривая (onset→peak→dur, в игровых
@@ -451,7 +455,7 @@ const S = {
   heat:0, hotbar:[...HOTBAR_DEFAULT], // «палево» и настраиваемый хотбар
   contacts:['🐱 Мяу-дилер (главный танцпол)'],
   tripReports:[], serotoninStorm:false, combo:0,
-  settings:{strobe:true, trip:1, alcoOnly:false, harm:true, vol:.7},
+  settings:{strobe:true, trip:1, alcoOnly:false, harm:true, vol:.7, bloom:true},
   tutorial:0,
   night:1,           // номер ночи (NG+)
   // статистика ночи для челленджей и экрана рассвета
@@ -936,6 +940,36 @@ function canvasTex(w, h, draw, rx=1, ry=1){
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
   return t;
 }
+// Карта нормалей из полутоновой «высоты»: даёт рельеф под скользящим неоном
+function texNormal(size, bumpFn, rx=1, ry=1, strength=2.6){
+  const h = document.createElement('canvas'); h.width=h.height=size;
+  const hg = h.getContext('2d'); hg.fillStyle='#808080'; hg.fillRect(0,0,size,size); bumpFn(hg,size);
+  const src = hg.getImageData(0,0,size,size).data;
+  const out = document.createElement('canvas'); out.width=out.height=size;
+  const og = out.getContext('2d'); const img = og.createImageData(size,size); const d = img.data;
+  const H = (x,y)=>{ x=(x+size)%size; y=(y+size)%size; return src[((y|0)*size+(x|0))*4]/255; };
+  for (let y=0;y<size;y++) for (let x=0;x<size;x++){
+    const dx=(H(x-1,y)-H(x+1,y))*strength, dy=(H(x,y-1)-H(x,y+1))*strength;
+    const l=Math.hypot(dx,dy,1), i=(y*size+x)*4;
+    d[i]=((dx/l)*.5+.5)*255; d[i+1]=((dy/l)*.5+.5)*255; d[i+2]=(1/l)*255; d[i+3]=255;
+  }
+  og.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(out); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(rx,ry); t.anisotropy=8;
+  return t;
+}
+function nAsphalt(){ return texNormal(256,(g,s)=>{ // трещины и зерно
+  for(let i=0;i<2600;i++){ const v=rnd(90,170)|0; g.fillStyle=`rgb(${v},${v},${v})`; g.fillRect(rnd(0,s),rnd(0,s),rnd(1,3),rnd(1,3)); }
+  g.strokeStyle='#303030'; g.lineWidth=1.4;
+  for(let i=0;i<7;i++){ g.beginPath(); let x=rnd(0,s),y=rnd(0,s); g.moveTo(x,y);
+    for(let j=0;j<5;j++){ x+=rnd(-30,30); y+=rnd(-30,30); g.lineTo(x,y);} g.stroke(); }
+},20,20,3.2); }
+function nConcrete(){ return texNormal(256,(g,s)=>{
+  for(let i=0;i<2000;i++){ const v=rnd(100,160)|0; g.fillStyle=`rgb(${v},${v},${v})`; g.fillRect(rnd(0,s),rnd(0,s),2,2); }
+  for(let i=0;i<8;i++){ g.fillStyle='#5a5a5a'; g.fillRect(rnd(0,s),rnd(0,40),rnd(2,5),rnd(60,180)); }
+},4,2,2.4); }
+function nMetal(){ return texNormal(128,(g,s)=>{ // гофр
+  for(let x=0;x<s;x+=16){ g.fillStyle='#f0f0f0'; g.fillRect(x,0,4,s); g.fillStyle='#303030'; g.fillRect(x+16,0,6,s); }
+},2,1,3.5); }
 function texAsphalt(){ return canvasTex(512,512,(g)=>{ // грязный асфальт с трещинами
   g.fillStyle='#15151d'; g.fillRect(0,0,512,512);
   for(let i=0;i<9000;i++){ const v=rnd(12,44)|0;
@@ -998,7 +1032,7 @@ function makeSign(text, color){
 /* Стек колонок у сцены */
 function speakerStack(){
   const g = new THREE.Group();
-  const box = new THREE.MeshStandardMaterial({map:texMetal(), color:0x666a77, roughness:.6});
+  const box = new THREE.MeshStandardMaterial({map:texMetal(), normalMap:nMetal(), color:0x666a77, roughness:.55, metalness:.55, envMapIntensity:1.0});
   for (let i=0;i<3;i++){
     const b = new THREE.Mesh(new THREE.BoxGeometry(3.4-i*.5, 2.6, 2.6), box);
     b.position.y = 1.3 + i*2.6; b.castShadow = true; g.add(b);
@@ -1025,6 +1059,30 @@ function stringLights(p1, p2, color, parent, bulbs=14){
   return inst;
 }
 
+// Процедурное окружение для отражений: тёмное небо + неоновый горизонт.
+// PMREM для физически корректных бликов; при сбое — тихий фолбэк без env.
+function buildEnvironment(){
+  try{
+    const w=512,h=256, c=document.createElement('canvas'); c.width=w; c.height=h;
+    const g=c.getContext('2d');
+    const grd=g.createLinearGradient(0,0,0,h);
+    grd.addColorStop(0,'#05030f'); grd.addColorStop(.55,'#0a0620'); grd.addColorStop(.7,'#241033');
+    grd.addColorStop(.8,'#3a0e40'); grd.addColorStop(1,'#08040e');
+    g.fillStyle=grd; g.fillRect(0,0,w,h);
+    // неоновые пятна-огни по горизонту (то, что отражается в лужах/металле)
+    const cols=['#ff2e88','#19f0ff','#a02eff','#39ff6a','#ffb01e'];
+    for(let i=0;i<40;i++){ const x=Math.random()*w, y=h*.62+Math.random()*h*.3, r=rnd(6,26);
+      const rg=g.createRadialGradient(x,y,0,x,y,r); const col=cols[i%cols.length];
+      rg.addColorStop(0,col); rg.addColorStop(1,'rgba(0,0,0,0)');
+      g.globalAlpha=.6; g.fillStyle=rg; g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
+    g.globalAlpha=1;
+    const eq=new THREE.CanvasTexture(c); eq.mapping=THREE.EquirectangularReflectionMapping; eq.colorSpace=THREE.SRGBColorSpace;
+    const pmrem=new THREE.PMREMGenerator(renderer); pmrem.compileEquirectangularShader?.();
+    scene.environment = pmrem.fromEquirectangular(eq).texture;
+    eq.dispose();
+  }catch(err){ console.warn('env map недоступен:', err); }
+}
+
 async function buildWorld(){
   scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x03000a, 0.0028); // разреженный туман — далёкая отрисовка
@@ -1033,10 +1091,14 @@ async function buildWorld(){
   worldGroup.userData.bulbs = []; // материалы гирлянд (пульс в такт)
   const ZC = Object.fromEntries(ZONES.map(z=>[z.name,z]));
 
-  // ── Земля: асфальт + светящиеся дорожки-указатели от входа к зонам ──
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(460,460),
-    new THREE.MeshStandardMaterial({map:texAsphalt(), roughness:.92, metalness:.05}));
+  // ── Environment map: процедурное неоновое «окружение» для отражений ──
+  buildEnvironment();
+
+  // ── Земля: асфальт с картой нормалей — рельеф оживает под скользящим неоном ──
+  const groundMat = new THREE.MeshStandardMaterial({map:texAsphalt(), normalMap:nAsphalt(),
+    roughness:.86, metalness:.15, envMapIntensity:.5});
+  groundMat.normalScale.set(.7,.7);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(460,460), groundMat);
   ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; worldGroup.add(ground);
   const pathMat = new THREE.MeshStandardMaterial({color:0x0a0a14, emissive:0x3a2470, emissiveIntensity:1.1});
   const ent = ZC['ВХОД'];
@@ -1048,10 +1110,10 @@ async function buildWorld(){
     p.position.set(ent.x+dx/2, .04, ent.z+dz/2);
     worldGroup.add(p);
   }
-  // лужи после дождя — глянцевые блики от неона
-  for (let i=0;i<14;i++){
-    const pud = new THREE.Mesh(new THREE.CircleGeometry(rnd(1.2,3),18),
-      new THREE.MeshStandardMaterial({color:0x0a1018, roughness:.05, metalness:.9}));
+  // лужи после дождя — зеркальные, ловят неон и окружение
+  const pudMat = new THREE.MeshStandardMaterial({color:0x0a1018, roughness:.04, metalness:1, envMapIntensity:1.4});
+  for (let i=0;i<16;i++){
+    const pud = new THREE.Mesh(new THREE.CircleGeometry(rnd(1.2,3.2),20), pudMat);
     pud.rotation.x=-Math.PI/2; pud.position.set(rnd(-140,140),.03,rnd(-120,100));
     worldGroup.add(pud);
   }
@@ -1110,7 +1172,7 @@ async function buildWorld(){
 
   // ── ВХОД: неоновая арка + турникеты ──
   const gate = new THREE.Group(); gate.position.set(ent.x,0,ent.z+6);
-  const pylonMat = new THREE.MeshStandardMaterial({map:texConcrete(), color:0x8888aa, roughness:.8});
+  const pylonMat = new THREE.MeshStandardMaterial({map:texConcrete(), normalMap:nConcrete(), color:0x8888aa, roughness:.78, envMapIntensity:.4});
   for (const px of [-8,8]){
     const pyl = new THREE.Mesh(new THREE.BoxGeometry(2.2,11,2.2), pylonMat);
     pyl.position.set(px,5.5,0); pyl.castShadow=true; gate.add(pyl);
@@ -1127,7 +1189,7 @@ async function buildWorld(){
   // ── ГЛАВНАЯ СЦЕНА (юг танцпола): башни, экран, лазеры, колонки, DJ ──
   const dzc = ZC['ГЛАВНЫЙ ТАНЦПОЛ'];
   const stage = new THREE.Group(); stage.position.set(dzc.x, 0, dzc.z-34);
-  const metalM = new THREE.MeshStandardMaterial({map:texMetal(), color:0x777d8c, roughness:.55, metalness:.5});
+  const metalM = new THREE.MeshStandardMaterial({map:texMetal(), normalMap:nMetal(), color:0x777d8c, roughness:.5, metalness:.6, envMapIntensity:1.0});
   const booth = new THREE.Mesh(new THREE.BoxGeometry(26,7,9), metalM);
   booth.position.y=3.5; booth.castShadow=true; stage.add(booth);
   const dj = makeHuman(0x111111, 0xff2e88); dj.position.set(0,7,0); dj.scale.setScalar(.9); stage.add(dj);
@@ -1179,7 +1241,7 @@ async function buildWorld(){
   // ── ТЕХНО-БУНКЕР: бетонная коробка, фиолетовый портал, красное нутро ──
   const bzc = ZC['ТЕХНО-БУНКЕР'];
   const bunker = new THREE.Group(); bunker.position.set(bzc.x,0,bzc.z);
-  const concM = new THREE.MeshStandardMaterial({map:texConcrete(), color:0x9a9aa8, roughness:.85});
+  const concM = new THREE.MeshStandardMaterial({map:texConcrete(), normalMap:nConcrete(), color:0x9a9aa8, roughness:.8, envMapIntensity:.4});
   const shellOut = new THREE.Mesh(new THREE.BoxGeometry(52,13,44), concM);
   shellOut.position.y=6.5; shellOut.castShadow=true; bunker.add(shellOut);
   const shellIn = new THREE.Mesh(new THREE.BoxGeometry(51,12.6,43),
@@ -1245,7 +1307,7 @@ async function buildWorld(){
   // ── ТУАЛЕТЫ: ряд кабинок, мигающая трубка ──
   const wzc = ZC['ТУАЛЕТЫ'];
   const wc = new THREE.Group(); wc.position.set(wzc.x,0,wzc.z);
-  const cabM = new THREE.MeshStandardMaterial({map:texMetal(), color:0x5a6db0, roughness:.6});
+  const cabM = new THREE.MeshStandardMaterial({map:texMetal(), normalMap:nMetal(), color:0x5a6db0, roughness:.55, metalness:.5, envMapIntensity:.9});
   for (let i=0;i<6;i++){
     const cab = new THREE.Mesh(new THREE.BoxGeometry(3.4,5.6,4.2), cabM);
     cab.position.set(i*4-10,2.8,0); cab.castShadow=true; wc.add(cab);
@@ -1286,7 +1348,7 @@ async function buildWorld(){
   // ── ПОДЗЕМКА: контейнеры, люк, зелёное свечение лаборатории ──
   const uzc = ZC['ПОДЗЕМНЫЙ УРОВЕНЬ'];
   const under = new THREE.Group(); under.position.set(uzc.x,0,uzc.z);
-  const contM = new THREE.MeshStandardMaterial({map:texMetal(), color:0x8899aa, roughness:.7});
+  const contM = new THREE.MeshStandardMaterial({map:texMetal(), normalMap:nMetal(), color:0x8899aa, roughness:.65, metalness:.5, envMapIntensity:.9});
   for (const [cx,cy,cz,ry] of [[-8,1.5,-4,.2],[6,1.5,3,-.5],[6,4.5,3,-.5],[-2,1.5,8,1.1]]){
     const cont = new THREE.Mesh(new THREE.BoxGeometry(10,3,4), contM);
     cont.position.set(cx,cy,cz); cont.rotation.y=ry; cont.castShadow=true; under.add(cont);
@@ -1943,6 +2005,10 @@ function updateSceneFX(dt, t){
     waypointBeacon.material.opacity = .22 + Math.sin(t*4)*.1;
   // дым дрейфует
   for (const sm of smokes){ sm.rotation.y += dt*.02; sm.material.opacity = .12 + S.lvl.psy*.1; }
+  // bloom дышит в такт биту и разгорается под веществами
+  if (bloomPass){
+    try{ bloomPass.strength.value = 0.5 + beatPulseT*.45 + S.empathy*.5 + S.lvl.psy*.45 + S.lvl.stim*.2; }catch(e){}
+  }
   beatPulseT = Math.max(0, beatPulseT - dt*6);
   // толпа танцует (инстансы) — bob в такт, обнимашки при эмпатии
   const dummy = new THREE.Object3D();
@@ -2786,7 +2852,13 @@ function togglePause(){
   }
   S.paused = !S.paused;
   el('pause').classList.toggle('on', S.paused);
-  if (S.paused) document.exitPointerLock?.(); else lockPointer();
+  if (S.paused){ // синхронизируем тумблеры с состоянием
+    el('setBloom').checked = S.settings.bloom;
+    el('setStrobe').checked = S.settings.strobe;
+    el('setHarm').checked = S.settings.harm;
+    el('setAlcoOnly').checked = S.settings.alcoOnly;
+    document.exitPointerLock?.();
+  } else lockPointer();
 }
 
 // мобильные джойстики (плавная деградация для тача)
@@ -2866,6 +2938,7 @@ el('mapCanvas').addEventListener('click', e=>{
 });
 
 // Настройки паузы
+el('setBloom').onchange = e=>{ S.settings.bloom = e.target.checked; saveGame(); };
 el('setStrobe').onchange = e=>{ S.settings.strobe = e.target.checked; saveGame(); };
 el('setTrip').oninput = e=>{ S.settings.trip = e.target.value/100; saveGame(); };
 el('setAlcoOnly').onchange = e=>{ S.settings.alcoOnly = e.target.checked; saveGame(); };
@@ -2896,6 +2969,7 @@ async function boot(fromSave){
   buildPlayer(el('cOutfit').value, el('cHair').value);
   S.camMode = parseInt(el('cCam').value);
   spawnNPCs();
+  setupPostFX(); // bloom-пайплайн (после того как есть scene+camera)
   if (fromSave) loadGame();
   S.started = true;
   el('hud').classList.add('on');
@@ -2997,9 +3071,30 @@ function loop(){
   fpsAcc += dt; fpsN++;
   if (fpsAcc > 2){
     const fps = fpsN/fpsAcc; fpsAcc=0; fpsN=0;
-    if (fps < 45 && !lowPerf){ lowPerf=true; renderer.setPixelRatio(1); }
+    if (fps < 40 && !lowPerf){ lowPerf=true; renderer.setPixelRatio(1); }
+    // совсем слабый GPU: жертвуем bloom ради плавности
+    if (fps < 28 && S.settings.bloom){ S.settings.bloom=false; toast('⚙ Bloom отключён ради плавности (вкл. в паузе)'); }
   }
-  renderer.render(scene, camera);
+  if (postFX && S.settings.bloom) postFX.renderAsync();
+  else renderer.render(scene, camera);
+}
+
+/* ── Постпроцессинг: bloom по неону + FXAA-сглаживание (WebGPU/TSL) ──
+   Порог отсекает всё, кроме ярких неоновых источников → мягкое свечение.
+   Интенсивность пульсирует в такт биту и растёт под веществами. */
+let postFX = null, bloomPass = null;
+function setupPostFX(){
+  try{
+    postFX = new THREE.PostProcessing(renderer);
+    const scenePass = pass(scene, camera);
+    const color = scenePass.getTextureNode();
+    // высокий порог: светятся только яркие неоновые источники, не вся сцена
+    bloomPass = bloom(color, 0.55, 0.45, 0.75); // strength, radius, threshold
+    postFX.outputNode = fxaa(color.add(bloomPass));
+  }catch(err){
+    console.warn('PostFX недоступен, играем без bloom:', err);
+    postFX = null; S.settings.bloom = false;
+  }
 }
 </script>
 </body>
